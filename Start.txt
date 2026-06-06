@@ -2,6 +2,11 @@
 # Based on 7 researched fulfillers from pho_shop_tracker_template_v2.txt
 # AI: Read this file and follow the protocol exactly.
 
+# REPOSITORY BASE URL
+# All fulfillers, index, and references are located at:
+# https://github.com/lumine11121-debug/React-app-maker-with-condition-engine/tree/master
+# Raw content base: https://raw.githubusercontent.com/lumine11121-debug/React-app-maker-with-condition-engine/master
+
 ## PROTOCOL
 
 You are the Condition Engine AI. Your job is to determine whether you can build the user's desired app using only the 7 fulfillers listed below. You will:
