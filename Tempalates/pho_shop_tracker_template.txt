@@ -1,0 +1,638 @@
+TEMPLATE: PHO_SHOP_TRACKER
+Description: Role-based order tracking app for a single pho shop. Cashier enters orders on
+their phone mirroring the existing paper slip flow. Menu is cached locally so cashier screen
+works even during network outages. Orders confirmed offline are queued locally and flush to
+Firebase automatically when internet restores — on the cashier's device, not the owner's.
+Owner views a dashboard with revenue, order counts, payment splits, item performance, and
+sales-by-hour filterable by Day/Week/Month. Year and All Time are dedicated screens that
+read entirely from local IndexedDB. Data syncs via Firebase Firestore with local IndexedDB
+cache and offline write queue. No CSV export, no customer-facing features in v1.
+Version: 2.0
+React Version: 18+
+Mental Models Document Version: 2.0
+
+---
+
+PREREQUISITES
+
+- Vite + React project (not Create React App)
+- Styling: Custom CSS via index.css (NovaPay-inspired dark theme). No inline styles except
+  dynamic overrides (e.g. conditional colors). CSS variables defined in :root.
+- No state management library — lifting state and React Context for auth/role only.
+- Backend: Firebase Firestore (free tier, Spark plan).
+- Target environment: mobile browser (PWA). Portrait-first. Max width 390px centered.
+- Dark mode only:
+    Background:  #0F1319
+    Surfaces:    #141920
+    Text:        #E4EEF8
+    Accent:      #4A9EE8  (CSS variable: --sky)
+- Internet NOT required for cashier order entry after first menu load.
+- Internet REQUIRED for: initial menu load on first cashier login, owner dashboard, syncing.
+
+---
+
+RESOURCE TIERING PRINCIPLE (non-negotiable design philosophy)
+
+This principle governs every data fetching and query decision in the app.
+
+OPERATIONAL LAYER — Day, Week, Month:
+  Cheap enough that the owner can use freely every day without concern.
+  Features here are prioritized for convenience and richness.
+  Month is comfortable but treated with caution — fetch on demand only, never auto-refresh.
+  Day can be more aggressive (auto-refresh acceptable).
+  Week: fetch on demand, no auto-refresh.
+
+ANALYTICAL LAYER — Year, All Time:
+  Every read must earn its place.
+  These are not filter options — they are dedicated screens.
+  They read entirely from local IndexedDB after first sync. Zero Firebase reads.
+  Used occasionally for stepping back, not daily operations.
+  The UI must feel visually distinct from the operational layer to communicate this naturally.
+
+This separation must be maintained throughout. Any new feature that involves Year or All Time
+data must read from local IndexedDB, never from Firebase directly.
+
+---
+
+FIXED IDEAS (non-negotiable)
+
+1. ENTRY FLOW
+   App opens to role selection screen: two buttons — Cashier and Owner.
+   Both require a hardcoded password (stored in constants.js).
+   Correct password → respective screen.
+   Wrong password → inline error message. No redirect. No lock-out.
+   No session persistence — closing and reopening the app returns to role selection.
+   Cashier password exists as a temporary security patch for v1. Do not remove it.
+
+2. CASHIER SCREEN — SINGLE SCREEN LAYOUT
+   One screen. No tabs. No navigation after login.
+
+   Item discovery (three methods always available simultaneously):
+   a. Default: all menu items displayed as a grid or list. No filter active.
+   b. Category filter: tap a category button to narrow items shown.
+      Tapping the active category again deselects it and returns to all items.
+      If no category is set on an item, it appears under all categories.
+   c. Search by typing: text input filters items by name in real time.
+      Works across all items regardless of active category filter.
+      Search and category filter can be active simultaneously.
+
+   Payment method selector on the same screen — options: Cash, GCash, PayMaya.
+   Selectable at any point before confirming the order.
+   Default: none selected. Cashier must choose before confirming. Enforce this.
+
+   Order building:
+   - Tap item → quantity selector appears (default 1, increment and decrement buttons).
+   - App computes subtotal per item and running total automatically. Never store these
+     as state — derive them during render from the order items array.
+   - Multiple items per order.
+   - Added items shown in a running order list on the same screen.
+   - Tap an added item to adjust quantity or remove it before confirming.
+
+   Confirm button → navigates to Order Summary screen.
+   Confirm button is disabled if no payment method is selected.
+
+3. ORDER SUMMARY SCREEN
+   Shows: auto-generated order number, all items with quantities and subtotals,
+   grand total, selected payment method.
+
+   Two buttons:
+   - Return: goes back to cashier screen. Order state is fully preserved. Nothing is lost.
+   - Confirm: executes save logic (see below).
+
+   Confirm save logic:
+   IF online:
+     1. Save order to Firebase Firestore.
+     2. On Firebase success — also save to local IndexedDB orders store.
+     3. Show toast: "Order #[N] saved" for 1.5 seconds.
+     4. Screen resets for next order.
+   IF offline:
+     1. Save order to local write queue in IndexedDB.
+     2. Show toast: "Order #[N] saved locally" for 1.5 seconds.
+     3. Show subtle persistent banner: "Working offline — orders will sync when connected."
+     4. Screen resets for next order.
+   NEVER write to local IndexedDB before Firebase confirms (except write queue).
+
+   Write queue flush (cashier side — non-negotiable):
+   The write queue flush MUST happen on the CASHIER'S device automatically when internet
+   restores. NOT on the owner's device. NOT on owner app open.
+   When internet connection is detected as restored:
+     - Iterate write queue.
+     - For each queued order: write to Firebase → on success, save to local orders store
+       and remove from queue. Atomic per order.
+     - If flush succeeds: remove offline banner.
+     - If flush partially fails: leave failed orders in queue, retry on next connection.
+   Implement internet detection via window online/offline events.
+
+   Order number generation:
+   On cashier login — fetch highest existing orderNumber from both Firebase and local
+   write queue. Take the maximum. Increment locally for each new order during the session.
+   Store orderNumber with every saved order document.
+   Not collision-safe under concurrent multi-cashier use — acceptable for v1.
+   Document as known limitation.
+
+4. OWNER SCREEN — TWO MODES
+   Bottom navigation with two top-level mode buttons: Shop Record and Shop Management.
+   Default mode on login: Shop Record.
+
+   ── SHOP RECORD ──────────────────────────────────────────────────────────────────
+
+   Three bottom tabs. Middle tab is default.
+
+   GLOBAL TIME FILTER (middle tab only): Day / Week / Month
+   One selector controls all five sections simultaneously.
+   Year and All Time are NOT options in this filter. They are separate dedicated screens.
+
+   Fetch behavior per period:
+   - Day: today's data from Firebase onSnapshot (live). Acceptable to auto-refresh.
+   - Week: local IndexedDB. Fetch on demand (on tab open or filter change). No auto-refresh.
+   - Month: local IndexedDB. Fetch on demand only. Never auto-refresh. Month is comfortable
+     but warrants caution as order history grows.
+
+   MIDDLE TAB — Daily Essentials (default):
+   One query per period change feeds ALL five sections. Never run a separate query per
+   section. Fetch matching orders once, derive all sections from that result in JavaScript.
+
+   Sections:
+   a. Total Revenue — sum of order.total within selected period.
+   b. Number of Orders — count of orders within selected period.
+   c. Cash vs Digital Split — group by paymentMethod, sum totals per group within period.
+   d. All Items Performance — flatten order.items arrays, group by itemId, sum revenue and
+      quantity per item within period. Default sort: revenue descending. Toggle to sort by
+      quantity descending.
+   e. Sales by Hour — bar chart. X-axis: hours of day 0–23 (fixed, always hours).
+      Y-axis: total revenue aggregated per hour across all orders in selected period.
+      Regardless of whether Day/Week/Month is selected — always shows by hour.
+      This reveals which hours are consistently strongest within any time frame.
+
+   Data source by period:
+   - Day selected: Firebase onSnapshot for today's orders.
+   - Week or Month selected: local IndexedDB orders cache.
+
+   LEFT TAB — Extended Graphs:
+   "Coming soon" placeholder in v1.
+   Future home of: 2–3 investigational charts, custom date range, specific past date lookup.
+   Do not build anything here in v1 beyond the placeholder.
+
+   RIGHT TAB — Raw Data:
+   Full order list, newest first.
+   Two display modes toggled by a single button:
+   - Collapsed (default): each row shows order number, time, total, payment method.
+   - Full Detail: each row expands to show all items and quantities.
+   Time filter: All Time / Day / Week / Month / Year.
+   All Time is a trust signal — owner sees all recorded orders, confirming nothing is lost.
+   It is not primarily a query tool. Place it last in the filter options.
+   Data source: local IndexedDB for all periods including today (raw data tab is not live).
+   No search feature in v1.
+
+   YEAR SUMMARY SCREEN (dedicated, not a filter option):
+   Accessible via a dedicated button visually distinct from the main tab bar.
+   Shows all five sections (same as middle tab) for the full year period.
+   Data source: local IndexedDB entirely. Zero Firebase reads.
+   Always shows "Last synced: [date and time]" prominently.
+   UI must feel visually different from the operational middle tab —
+   the owner should intuitively understand this is a different kind of view.
+
+   ALL TIME SUMMARY SCREEN (dedicated, not a filter option):
+   Same treatment as Year Summary. Dedicated button. Separate screen.
+   Shows all five sections across entire order history.
+   Data source: local IndexedDB entirely. Zero Firebase reads.
+   Always shows "Last synced: [date and time]" prominently.
+   Same visual distinction as Year Summary.
+
+   ── SHOP MANAGEMENT ──────────────────────────────────────────────────────────────
+
+   Owner manages menu and categories from this mode.
+
+   Each menu item has: name (text), price (number), category (from existing categories).
+   Categories are created and managed by the owner.
+
+   Owner actions on items:
+   - Add new item: name, price, category — all required. No optional fields in v1.
+   - Edit item: name, price, category. Price changes apply to future orders only.
+     Never rewrite historical order data. priceAtOrder is immutable after save.
+   - Toggle out of stock: hides item from cashier screen without deleting. Reversible.
+     One tap. Easy. This is the common action.
+   - Delete item: available but deliberately hard to reach.
+     Path: tap item → edit view → scroll to bottom → Delete button → confirmation modal.
+     Two deliberate steps before deletion executes. Destructive actions earn their friction.
+
+   Category actions:
+   - Add category: name required.
+   - Rename category.
+   - Delete category: only allowed if no menu items currently use it. Enforce this.
+
+   If no menu items exist (fresh install):
+   Cashier screen shows empty state message: direct owner to add items via Shop Management.
+   Developer seeds dummy items manually before handoff. No automatic seed logic.
+
+5. FIREBASE DATA STRUCTURE
+
+   /orders/{orderId}
+     orderId:       string — Firestore auto-generated document ID
+     orderNumber:   number — sequential, generated locally on cashier device
+     timestamp:     Firestore Server Timestamp — NEVER device clock, ever
+     items:         array of {
+                      itemId:       string
+                      name:         string — snapshot at time of order, never reference menu
+                      quantity:     number
+                      priceAtOrder: number — snapshot at time of order, never reference menu
+                      subtotal:     number
+                    }
+     total:         number
+     paymentMethod: string — "cash" | "gcash" | "paymaya"
+     shopId:        string — hardcoded "shop_001" in v1
+
+   /menu/{itemId}
+     itemId:        string — Firestore auto-generated
+     name:          string
+     price:         number
+     category:      string — categoryId reference
+     outOfStock:    boolean
+     shopId:        string — hardcoded "shop_001"
+
+   /categories/{categoryId}
+     categoryId:    string — Firestore auto-generated
+     name:          string
+     shopId:        string — hardcoded "shop_001"
+
+   CRITICAL: priceAtOrder and item name MUST be snapshotted at time of order confirmation.
+   They must never be derived from current menu data when displaying historical orders.
+   Menu price changes must never affect any existing order record.
+
+   CRITICAL: Always use Firestore Server Timestamps. Never new Date(). Never device clock.
+   Incremental sync reliability and query correctness depend entirely on this.
+
+6. LOCAL INDEXEDDB STRUCTURE
+
+   Object stores:
+
+   orders
+     Fields mirror Firebase order documents exactly.
+     Index on: timestamp (for incremental sync and period queries).
+     Index on: paymentMethod (for local filtering and split calculations).
+     Index on: shopId.
+
+   menuCache
+     Fields mirror Firebase menu documents exactly.
+     Used by cashier screen when offline.
+     Replaced entirely on each successful menu fetch.
+     Index on: category, outOfStock.
+
+   writeQueue
+     orderId:       string — locally generated temporary ID
+     orderData:     full order object (same shape as Firebase order document)
+     queuedAt:      ISO date string
+     retryCount:    number (for future retry limiting if needed)
+
+   syncMeta
+     lastSyncTimestamp:   Firestore Timestamp of most recently synced order
+     firstSyncComplete:   boolean — false until first full sync finishes entirely
+     lastSyncDate:        ISO date string — displayed in UI as "Last synced"
+
+7. SYNC ARCHITECTURE
+
+   PRINCIPLE: Firebase is source of truth. IndexedDB is cache. Local DB can always
+   be rebuilt from Firebase. If Firebase is intact, no data is ever permanently lost.
+
+   MENU SYNC (cashier side):
+   On cashier login with internet:
+     - Fetch menu via Firebase onSnapshot.
+     - On each snapshot update: replace menuCache in IndexedDB entirely.
+     - Cashier screen reads from menuCache (not directly from snapshot state).
+   On cashier login without internet:
+     - Read from menuCache. Show cached menu immediately.
+     - Show subtle "Working offline" indicator.
+     - When internet restores: onSnapshot resumes, menuCache updates.
+   Cancel onSnapshot listener in useEffect cleanup. Always.
+
+   FIRST INSTALL SYNC (owner side):
+   Triggered when: firstSyncComplete is false.
+   Show full-screen loading UI. Block dashboard access entirely until complete.
+   Message: "Setting up your records for the first time. This may take a moment."
+   Show progress: "Syncing orders... [N] synced so far."
+   Fetch all orders from Firebase in batches of 500 using orderBy('timestamp') and
+   startAfter(lastDoc) cursor pagination.
+   Write each batch atomically to local orders store before fetching next batch.
+   Update lastSyncTimestamp after each successful batch — if interrupted, next open
+   resumes from last successful batch rather than starting over.
+   Set firstSyncComplete to true only after all batches complete successfully.
+   Read cost: ~1 read per historical order. One-time cost, never repeated.
+   If daily read budget is exhausted on install day: sync is incomplete.
+   App shows partial data with banner: "Your full history is loading. Check back tomorrow."
+   Today's live orders still work via onSnapshot — daily operations unaffected.
+   Best practice: perform first install at or just after 3–4 PM Philippine time
+   when daily Firebase budget has just reset.
+
+   INCREMENTAL SYNC (owner side, on every app open):
+   Triggered when: firstSyncComplete is true.
+   Steps (execute in this exact order):
+     1. Read lastSyncTimestamp from syncMeta.
+     2. Query Firebase: orders where timestamp > lastSyncTimestamp, ordered by timestamp asc.
+     3. If zero results: nothing to do. Update lastSyncDate to now. Exit.
+     4. If results exist:
+        a. Open IndexedDB transaction (atomic).
+        b. Write all new order documents to orders store.
+        c. Update lastSyncTimestamp to timestamp of last received document.
+        d. Update lastSyncDate to current date/time.
+        e. Commit transaction.
+     5. Update "Last synced" indicator in UI.
+   ATOMICITY IS NON-NEGOTIABLE: either all documents are written and lastSyncTimestamp
+   is updated, or nothing is written and lastSyncTimestamp stays unchanged.
+   A partial write with updated timestamp = permanent data gap. This is a real bug.
+   Wrap every sync write in an IndexedDB transaction.
+
+   WRITE QUEUE FLUSH (cashier side — fires on internet restore):
+   Triggered by: window 'online' event on cashier device.
+   NOT triggered by owner app open. NOT triggered by owner device.
+   Steps:
+     1. Read all items from writeQueue store.
+     2. For each queued order (in queuedAt order, oldest first):
+        a. Write to Firebase Firestore.
+        b. On Firebase success: save to local orders store AND remove from writeQueue.
+           These two operations are atomic — both succeed or neither does.
+        c. On Firebase failure: leave in queue, continue to next item.
+     3. When queue is empty: remove "Working offline" banner from cashier screen.
+   Show queue flush progress subtly if queue is large (e.g. after long outage).
+
+8. UI REQUIREMENTS FOR DATA STATE TRANSPARENCY
+
+   Owner must always know the state of their data without asking.
+
+   Required indicators:
+   a. "Last synced: [date and time]" — subtle persistent indicator on owner dashboard.
+      Updates after every successful incremental sync.
+      Example: "Last synced: today 4:02 PM"
+   b. First install loading screen — full screen, blocks dashboard, shows progress.
+      Not dismissible until firstSyncComplete is true.
+   c. Incremental sync in progress — subtle spinner during sync on app open.
+      Does not block dashboard. Disappears when complete.
+   d. Incomplete sync warning — if firstSyncComplete is false and partial data exists:
+      Banner: "Your full history is being loaded. Some historical data may be incomplete."
+      Disappears when firstSyncComplete becomes true.
+   e. Year and All Time screens — always show "Last synced: [date]" prominently.
+   f. Cashier offline banner — "Working offline — orders will sync when connected."
+      Appears when internet drops. Disappears when write queue flushes successfully.
+
+9. AUTHENTICATION (v1)
+   Hardcoded passwords in constants.js. Role state in RoleContext.
+   Cashier password is a deliberate security measure — not optional, not removable.
+   It covers the known hole that anyone who installs the app can act as cashier.
+   Future: Firebase Auth with owner-managed cashier accounts.
+
+10. ALL INPUTS ARE CONTROLLED (Model 9)
+    Password inputs, search input, quantity inputs, item name, price, category —
+    all are controlled React inputs with value and onChange.
+
+11. COMPONENT LIFETIME AND CLEANUP (Model 10)
+    Cancel ALL onSnapshot listeners in useEffect cleanup functions.
+    Cancel sync operations on unmount.
+    Remove window event listeners (online/offline) on unmount.
+    Uncancelled listeners silently consume Firebase reads indefinitely.
+
+---
+
+FILE STRUCTURE (fixed)
+
+src/
+  App.jsx                     — root, RoleContext provider, routing between screens
+  RoleContext.js              — React Context: currentRole, isAuthenticated
+  constants.js                — hardcoded passwords, shopId, payment method options
+  index.css                   — NovaPay-inspired dark theme, CSS variables
+
+  auth/
+    RoleSelection.jsx         — role buttons, password input, inline error
+
+  cashier/
+    CashierScreen.jsx         — menu grid, category filter, search, order builder,
+                                payment selector, offline banner
+    OrderSummary.jsx          — summary view, return/confirm, online/offline save logic,
+                                toast notification
+
+  owner/
+    OwnerScreen.jsx           — mode switcher: Shop Record / Shop Management
+    ShopRecord.jsx            — three-tab layout, global period filter, sync trigger on mount
+    MiddleTab.jsx             — five dashboard sections, single query feeds all
+    LeftTab.jsx               — "Coming soon" placeholder
+    RawDataTab.jsx            — order list, collapsed/full modes, time filter
+    YearSummary.jsx           — dedicated year screen, local IndexedDB only
+    AllTimeSummary.jsx        — dedicated all time screen, local IndexedDB only
+    ShopManagement.jsx        — menu and category management
+
+  hooks/
+    useMenu.js                — onSnapshot + menuCache write + offline fallback from cache
+    useOrders.js              — local IndexedDB orders + live today onSnapshot
+    useSync.js                — first install sync and incremental sync logic
+    useWriteQueue.js          — offline queue, flush on window online event
+    useNextOrderNumber.js     — fetch highest orderNumber from Firebase + queue on login
+
+  firebase/
+    firebaseConfig.js         — Firebase app init and Firestore instance
+    orderService.js           — saveOrder, getOrdersSince(timestamp), getOrdersToday
+    menuService.js            — getMenuItems (onSnapshot), addMenuItem, updateMenuItem,
+                                toggleOutOfStock, deleteMenuItem
+    categoryService.js        — getCategories, addCategory, renameCategory, deleteCategory
+
+  db/
+    indexedDB.js              — open DB, define all object stores and indexes
+    syncService.js            — first sync, incremental sync, atomic batch writes
+    queueService.js           — addToQueue, getQueue, removeFromQueue, flushQueue
+
+  utils/
+    chartHelpers.js           — groupByHour(orders), filterByPeriod(orders, period),
+                                sortItemsByRevenue(items), sortItemsByQuantity(items),
+                                deriveAllSections(orders) — one call, all five sections
+    formatters.js             — formatCurrency (₱), formatTime, formatDate, formatOrderNumber
+
+---
+
+STATE PLACEMENT (Model 4)
+
+App.jsx
+  — currentRole, isAuthenticated via RoleContext provider
+
+RoleSelection.jsx
+  — local: passwordInput, error
+
+CashierScreen.jsx
+  — local: currentOrderItems (array), selectedPaymentMethod, searchText, activeCategory
+  — uses: useMenu (cached menu + categories), useWriteQueue (flush status), useNextOrderNumber
+
+OrderSummary.jsx
+  — receives: currentOrderItems, selectedPaymentMethod, orderNumber as props
+  — local: isSaving, saveError
+  — calls: orderService.saveOrder or queueService.addToQueue
+
+OwnerScreen.jsx
+  — local: activeMode ("shopRecord" | "shopManagement")
+
+ShopRecord.jsx
+  — local: globalPeriod ("day" | "week" | "month"), activeTab ("middle" | "left" | "right")
+  — triggers: useSync on mount
+
+MiddleTab.jsx
+  — local: itemSortMode ("revenue" | "quantity")
+  — uses: useOrders(globalPeriod) — single hook call, returns all five section data
+
+RawDataTab.jsx
+  — local: displayMode ("collapsed" | "full"), timePeriod
+
+YearSummary.jsx
+  — local: itemSortMode
+  — uses: useOrders("year") — reads local IndexedDB only
+
+AllTimeSummary.jsx
+  — local: itemSortMode
+  — uses: useOrders("alltime") — reads local IndexedDB only
+
+ShopManagement.jsx
+  — local: menuItems, categories, editingItem, editingCategory, isDeleting, error
+
+---
+
+CUSTOMIZATION POINTS
+
+1. Hardcoded passwords — change in constants.js
+2. shopId — change "shop_001" in constants.js. Multi-shop becomes real when dynamic.
+3. Payment methods — add or remove in constants.js. No structural change needed.
+4. Currency symbol — change in formatters.js.
+5. Color accent — change --sky in index.css CSS variable. Propagates everywhere.
+6. Dashboard sections — MiddleTab.jsx and deriveAllSections() in chartHelpers.js.
+7. Batch size for first sync — change in syncService.js (default 500).
+
+---
+
+MENTAL MODEL MAPPING
+
+Model 1 — UI is function of state
+  Cashier screen: menu items, active category, search text, order items, payment method.
+  Owner dashboard: activeMode, activeTab, globalPeriod, synced orders data.
+
+Model 2 — Reusable components
+  MenuItem reused in cashier grid and shop management list.
+  OrderRow reused in summary screen and raw data tab.
+  PeriodFilter reused wherever Day/Week/Month toggle appears.
+  SectionCard reused across all five dashboard sections.
+
+Model 3 — State vs regular variable
+  State: currentOrderItems, selectedPaymentMethod, searchText, activeCategory,
+         globalPeriod, displayMode, isSaving.
+  Regular (derived during render): runningTotal, filteredMenuItems, sectionData.
+  Never store derived values as state.
+
+Model 4 — State lives where shared
+  RoleContext: role and auth — shared app-wide.
+  CashierScreen: order-in-progress — local only, not shared.
+  ShopRecord: globalPeriod — shared across all tabs via props.
+
+Model 5 — State temporary, Firebase permanent
+  Order-in-progress state lost if app closes before confirming — mirrors paper slip behavior.
+  Confirmed orders permanent in Firebase.
+  Write queue survives app close (IndexedDB is persistent).
+
+Model 6 — Props down, events up
+  CashierScreen → OrderSummary: order data flows down as props.
+  OrderSummary → CashierScreen: onConfirmed callback flows up.
+  ShopRecord → each tab: globalPeriod flows down, onPeriodChange flows up.
+
+Model 7 — useEffect for side effects
+  useMenu: useEffect sets up onSnapshot listener, cleanup cancels it.
+  useOrders: useEffect fetches from IndexedDB when period changes.
+  useWriteQueue: useEffect adds/removes window online event listener.
+  useSync: useEffect triggers sync on mount.
+
+Model 8 — Lists need keys
+  Menu items: key = itemId (Firestore document ID).
+  Order items in cashier: key = itemId within order array.
+  Order list in raw data tab: key = orderId.
+  Chart bars: key = hour string (e.g. "14" for 2PM).
+
+Model 9 — Controlled inputs
+  All inputs: password, search, quantity, item name, price, category — controlled.
+
+Model 10 — Component lifetime
+  Order state in CashierScreen lost on unmount — acceptable, mirrors paper slip.
+  Write queue survives unmount — IndexedDB is persistent, not component state.
+  All listeners cancelled on unmount — required, see Fixed Idea 11.
+
+Model 11 — Data fetching three states
+  useMenu, useOrders, useSync all expose: loading, error, data.
+  Components handle all three states explicitly. No silent loading.
+
+Model 12 — Custom hooks
+  useMenu, useOrders, useSync, useWriteQueue, useNextOrderNumber.
+
+Model 13 — Context
+  RoleContext for auth and role state only. Nothing else uses context.
+
+---
+
+ANTI-PATTERNS (forbidden)
+
+- Array index as list key — always use document ID or stable unique property.
+- useEffect without dependency array — always specify dependencies explicitly.
+- Direct state mutation — always use setter functions.
+- Storing derived values as state — runningTotal, filteredItems are derived during render.
+- Writing to local IndexedDB before Firebase confirms — except write queue only.
+- Allowing order confirmation without a payment method selected — enforce with disabled button.
+- Forgetting to cancel onSnapshot listeners in useEffect cleanup — always clean up.
+- Removing window event listeners on unmount — required for online/offline detection.
+- Referencing current menu price in historical order display — always use priceAtOrder.
+- Using device clock for any timestamp — always use Firestore Server Timestamp.
+- Running separate queries per dashboard section — one query feeds all five sections.
+- Auto-refreshing Week or Month data — fetch on demand only.
+- Treating Year or All Time as filter options — they are dedicated screens, always local.
+- Partial IndexedDB sync writes without atomic transaction — always wrap in transaction.
+
+---
+
+KNOWN LIMITATIONS (v1)
+
+- Order numbers not collision-safe under multiple cashiers. Single cashier only.
+- Write queue delivery order not guaranteed if network flaps repeatedly during flush.
+  Orders are never lost — just potentially out of sequence. Acceptable for v1.
+- Menu cache may briefly show stale items if owner changes menu during cashier offline period.
+  Resolves automatically when internet restores and onSnapshot resumes.
+- Year and All Time screens may be slow with very large local order history (>10k orders).
+  Pagination not in v1.
+- First install on a day with exhausted daily Firebase read budget will be incomplete.
+  Resolves automatically on next app open with fresh daily budget.
+  Communicate to owner: best to install just after 3–4 PM Philippine time.
+- Local IndexedDB is a cache only. Not a backup. If both Firebase and local DB are lost,
+  data is unrecoverable. Mitigated in future by periodic CSV export.
+
+---
+
+FUTURE FEATURES (not v1 — logged for reference)
+
+- Cashier accounts: owner creates and manages cashier logins via Firebase Auth.
+- Notes: attached to orders or shifts for flagging unusual situations.
+- Customer-facing screen: display order summary on customer's side or shareable link.
+- CSV export as true backup independent of Firebase and local DB.
+- Multi-shop support: shopId becomes dynamic. Each shop has its own sync state.
+- Order void and correction: requires sync architecture update to handle edits not just inserts.
+- Pagination for raw data tab and Year/All Time screens.
+- Custom date range filter: lives in left tab when graphs are added.
+- Left tab graphs (2–3 investigational charts): added incrementally.
+- Item variants: small/large sizes at different prices per item.
+- Force sync button: buried in owner settings, re-runs first install sync for peace of mind.
+
+---
+
+VERSION DRIFT NOTES
+
+- If Firebase free tier limits become a concern (unlikely at single-shop volume), reduce
+  onSnapshot listener frequency or increase sync batch size in syncService.js.
+- If multi-cashier is added, order number generation must use Firestore transactions
+  to prevent collisions. Replace local increment with server-side atomic counter.
+- If CSV export is added, always read from local IndexedDB — never from Firebase directly.
+  Avoids read cost entirely.
+- If offline mode is expanded to owner dashboard, a two-way merge strategy is required.
+  Local writes and Firebase writes must be reconciled. Non-trivial — plan carefully.
+- If custom date ranges are added (left tab), query local IndexedDB only. Never Firebase.
+- If Firestore security rules are added later, ensure shopId scoping is applied to all
+  collections consistently.
+- If a new mental model is added to Tier 1, update the mapping section above.
+
+---
+
+END OF TEMPLATE

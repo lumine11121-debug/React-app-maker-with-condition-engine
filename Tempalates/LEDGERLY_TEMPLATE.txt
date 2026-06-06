@@ -1,0 +1,264 @@
+TEMPLATE: LEDGERLY
+Description: Offline invoice & expense tracker for solo business owners. Create invoices in 30 seconds, log expenses, see a hardcoded bar chart of expenses by day/week/month, and view a business health score. No signup, no internet required. Works as PWA or Android APK. Exports data as JSON for backup. Built with React + Capacitor + IndexedDB + canvas bar chart.
+Version: 1.0
+React Version: 18+
+Mental Models Document Version: 2.0
+
+---
+
+PREREQUISITES
+
+- Vite + React project (not Create React App)
+- Styling: inline style objects (no CSS files except index.css for body background). Follows Insightly styling conventions.
+- No state management library – lifting state and props only.
+- No backend. All data stored locally in IndexedDB.
+- Target environments: mobile browser (PWA) and Android APK via Capacitor.
+- Dark mode only (same colors as Insightly: background #0f0f0f, surfaces #161616, text #e0e0e0, accent #2272c3).
+- Portrait-first. Max width 390px centered.
+
+---
+
+FIXED IDEAS (non-negotiable)
+
+1. The app has three main views: Dashboard (overview + business health score + expense graph), Invoices (list + create/edit), Expenses (list + add/edit). Navigation via bottom tab bar or simple header links.
+
+2. All data is stored in IndexedDB with two stores: `invoices` and `expenses`. Schema for each store is fixed (see below). No other stores.
+
+3. Invoice schema (fixed):
+   - id (string, auto-generated timestamp)
+   - customerName (string)
+   - items (array of { description: string, quantity: number, unitPrice: number, total: number })
+   - tax (number, 0–100, applied to subtotal)
+   - total (number, computed)
+   - date (string, ISO date YYYY-MM-DD)
+   - paid (boolean, default false)
+   - pdfBlob (optional, stored as base64 for offline PDF generation)
+
+4. Expense schema (fixed – CSV‑like flat table):
+   - id (string, auto-generated)
+   - amount (number, required)
+   - category (string, one of: Supplies, Utilities, Rent, Travel, Meals, Software, Hardware, Other)
+   - date (string, ISO date YYYY-MM-DD)
+   - note (string, optional)
+
+5. The expense graph is **hardcoded** – always shows expenses. No configuration UI. Graph includes three toggle buttons: Day, Week, Month. On each toggle, the graph re‑groups expenses by the selected period and draws a bar chart using HTML canvas. The canvas drawing logic is self‑contained in a custom hook `useExpenseChart`.
+
+6. Business Health Score is computed automatically from the last 30 days: (total invoices - total expenses) / total invoices, clamped 0–100, with a message (“Excellent”, “Good”, “Warning”, “Critical”). Displayed on Dashboard as a large number + label.
+
+7. Data export: export all invoices and expenses as a single JSON file (download via blob). Import: read JSON file, validate schema, replace all existing data (or merge – merge is optional, but replace is simpler for MVP). Export/import uses the same three‑layer fallback as Insightly: Capacitor native bridge → Web Share → blob download.
+
+8. PDF invoices: generated on the fly using jsPDF. When user clicks “Download PDF” on an invoice, the app builds a PDF from the invoice data. No server. PDF is saved to device via the export fallback (or directly shown in browser for desktop).
+
+9. No authentication, no user accounts. The app is single‑user, offline‑first. All data stays on the device unless exported.
+
+10. The app works entirely offline after first load (PWA caches assets). Capacitor build produces an APK that works offline.
+
+11. All forms are controlled inputs (Model 9). No uncontrolled forms except file inputs for import.
+
+12. List views (invoices, expenses) use unique id as key (Model 8). No index as key.
+
+13. State placement follows Model 4:
+    - App.jsx holds no data state – just route/current view (dashboard, invoices, expenses). Data state lives in custom hooks per view.
+    - Dashboard reads from IndexedDB via `useLedgerData` hook.
+    - Invoices view holds its own form state and list refresh state.
+    - Expenses view similarly.
+    - No global context for data – React Query not used; custom hooks call IndexedDB directly.
+
+14. IndexedDB interactions are wrapped in a single module `db.js` that exports async functions: `getAllInvoices`, `saveInvoice`, `deleteInvoice`, `getAllExpenses`, `saveExpense`, `deleteExpense`, `exportAllData`, `importAllData`. No direct IndexedDB calls inside components.
+
+15. The expense graph canvas updates whenever expenses change or the period toggle changes. The grouping logic is pure functions: `groupByDay(expenses)`, `groupByWeek(expenses)`, `groupByMonth(expenses)`. Each returns array of { period: string, total: number }.
+
+---
+
+FILE STRUCTURE (fixed – do not rename or reassign roles without updating the template)
+
+React source (src/):
+  App.jsx                 – root, holds currentView state (dashboard/invoices/expenses), renders tab bar and active view
+  Dashboard.jsx           – shows business health score, total invoices, total expenses, profit, and ExpenseChart component
+  ExpenseChart.jsx        – contains period toggle (day/week/month), canvas drawing, grouping logic
+  Invoices.jsx            – list of invoices, form to add/edit invoice, PDF export button
+  Expenses.jsx            – list of expenses, form to add/edit expense
+  useLedgerData.js        – custom hook that fetches data from IndexedDB and returns { invoices, expenses, loading, error, refresh }
+  useExpenseChart.js      – custom hook that takes expenses and period, returns grouped data and canvas drawing function
+  db.js                   – IndexedDB wrapper (openDB, stores, CRUD)
+  exportUtils.js          – export/import JSON, PDF generation, fallback share logic
+  index.css               – body background only (#0f0f0f)
+  main.jsx                – React entry
+
+Capacitor native layer (android/…):
+  android/app/src/main/java/com/ledgerly/app/MainActivity.java – adds AndroidExport bridge for native file export (same pattern as Insightly). This is required for APK export to work.
+
+---
+
+COMPONENT ROLES
+
+App.jsx
+  State: currentView ('dashboard' | 'invoices' | 'expenses')
+  Renders: bottom tab bar with three icons, active view component
+  No data state – passes refresh callbacks down to views via context? No, uses custom hooks inside each view.
+
+Dashboard.jsx
+  State: period ('day' | 'week' | 'month')
+  Calls useLedgerData() to get expenses and invoices.
+  Computes totals and business health score.
+  Renders ExpenseChart child, passing expenses and period.
+  No direct editing – only view.
+
+ExpenseChart.jsx
+  Props: expenses, period, onPeriodChange (lifted from Dashboard)
+  Uses useExpenseChart to compute grouped data and draw canvas.
+  Canvas is drawn inside useEffect watching expenses and period.
+  Three toggle buttons.
+
+Invoices.jsx
+  State: showForm (boolean), editingInvoice (null or invoice object), formData (controlled fields)
+  Calls useLedgerData() to get invoices and refresh.
+  Calls saveInvoice from db.js on submit.
+  Renders list with delete button and “Download PDF” button.
+  PDF generation uses exportUtils.js.
+
+Expenses.jsx
+  Similar to Invoices but simpler (amount, category, date, note). Category is a dropdown of fixed categories (Supplies, Utilities, Rent, Travel, Meals, Software, Hardware, Other).
+
+useLedgerData.js
+  Custom hook that:
+    - maintains invoices, expenses, loading, error state
+    - on mount, loads all data from IndexedDB
+    - provides refresh() to reload
+    - provides add/update/delete functions that call db.js then refresh
+  This centralizes all data operations for a view.
+
+db.js
+  Exports:
+    - initDB() – creates stores, called once in main.jsx
+    - getAll(storeName)
+    - save(storeName, item) – upsert by id
+    - remove(storeName, id)
+    - getAllData() – for export
+    - importAllData(data) – clears and bulk puts
+
+exportUtils.js
+  Exports:
+    - exportToJSON(data, filename)
+    - importFromJSON(file, callback)
+    - generateInvoicePDF(invoice) – returns blob
+    - shareOrDownload(blob, filename, mime) – implements Capacitor → Web Share → download fallback
+
+---
+
+CUSTOMIZATION POINTS (what can be changed for a different business)
+
+These are the only things you would change if reusing this template for another client:
+
+1. Expense categories – the fixed list in Expenses.jsx dropdown (e.g., change “Supplies” to “Ingredients” for a bakery).
+2. Invoice fields – add or remove fields (e.g., add “PO Number”, remove “tax”).
+3. Business Health Score formula – change the calculation or the message thresholds.
+4. Graph grouping – currently day/week/month. Could be changed to “by category” or “by location” by modifying grouping functions.
+5. App name and accent color – in capacitor.config.json, manifest, and inline style constants.
+6. Android package ID – com.ledgerly.app → change to client’s name.
+
+Everything else (offline, IndexedDB, PWA, export/import, PDF, canvas graph) remains the same.
+
+---
+
+MENTAL MODEL MAPPING
+
+Model 1 (UI is a function of state)
+  Dashboard UI depends on expenses, invoices, period.
+  Invoice form UI depends on formData.
+  Graph UI depends on expenses and period.
+
+Model 2 (Components are reusable UI descriptions)
+  ExpenseChart is reusable across any view that needs expense grouping.
+  InvoiceForm is a sub‑component used inside Invoices for both add and edit.
+
+Model 3 (State vs regular variable)
+  State: showForm, editingInvoice, formData, period, invoices array, expenses array.
+  Regular variables: computed totals, business score, grouped chart data (derived during render).
+
+Model 4 (State lives where it needs to be shared)
+  Invoices state stays inside Invoices component – not shared.
+  Expenses state stays inside Expenses.
+  Dashboard reads from IndexedDB via hook, no shared state with other views.
+  This avoids prop drilling.
+
+Model 5 (State is temporary, files are permanent)
+  All data in IndexedDB is permanent – survives app close, device reboot.
+  Export/Import provides backup and transfer.
+
+Model 6 (Props flow down, events flow up)
+  Dashboard passes period and onPeriodChange to ExpenseChart.
+  InvoiceForm receives onSave callback from Invoices.
+
+Model 7 (useEffect for side effects)
+  useExpenseChart draws canvas inside useEffect watching grouped data and period.
+  PDF generation occurs on button click, not in useEffect.
+  IndexedDB reads happen on mount and after mutations.
+
+Model 8 (Lists need keys)
+  Invoice list uses invoice.id.
+  Expense list uses expense.id.
+  Bar chart items use period label as key (unique per period).
+
+Model 9 (Controlled inputs)
+  All form inputs (customer name, item description, amount, category, etc.) are controlled with useState.
+
+Model 10 (Component lifetime)
+  Form unmounts after save – unsaved changes lost (planned improvement: warn before discard).
+  IndexedDB data persists across unmounts.
+
+Model 11 (Data fetching – three states)
+  useLedgerData returns loading, error, and data (success). This matches the three‑state pattern even though data is local (async IndexedDB read).
+
+Model 12 (Custom hooks)
+  useLedgerData – all IndexedDB interactions for a view.
+  useExpenseChart – grouping + canvas drawing.
+
+Model 13 (Context)
+  Not used – state lifting and custom hooks are sufficient.
+
+---
+
+ANTI-PATTERNS (forbidden)
+
+- Using array index as key.
+- useEffect without dependency array.
+- Direct mutation of state.
+- Storing PDF blobs inside IndexedDB (generate on demand instead).
+- Using external chart libraries (canvas drawing is hardcoded).
+- Adding configuration UI for the graph – the graph is intentionally hardcoded.
+- Any code that assumes internet connection – all features must work offline.
+- Using fetch or axios (no external APIs).
+
+---
+
+EXPORT FLOW (same as Insightly)
+
+1. Check window.AndroidExport – if present (Capacitor APK), call it with base64 data.
+2. Check navigator.share and navigator.canShare – if present, use Web Share API with File object.
+3. Fallback – blob download via anchor element.
+
+---
+
+KNOWN ISSUES AND PLANNED IMPROVEMENTS
+
+1. No search/filter in invoice or expense lists. Add in v2.
+2. No edit for paid status in invoice list – need to open invoice to mark paid.
+3. No dark/light mode toggle – dark only (fixed).
+4. Business health score is simple – could be enhanced with trend analysis.
+5. No recurring invoices or expense templates.
+6. Canvas bar chart does not handle zero expenses gracefully – show “no expenses” message.
+7. Importing JSON replaces all data – merging is safer but adds complexity.
+8. PDF layout is basic – could be improved with logo and styling.
+
+---
+
+VERSION DRIFT NOTES
+
+- If Capacitor changes the JavaScript bridge interface, update exportUtils.js.
+- If browser storage quotas become an issue for large invoice lists, consider pagination or SQLite via Capacitor.
+- If a new mental model is added to Tier 1, re‑evaluate the mapping.
+
+---
+
+END OF TEMPLATE

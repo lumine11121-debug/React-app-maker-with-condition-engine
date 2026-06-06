@@ -1,0 +1,86 @@
+## 7. sequential_order_number | medium | Generate sequential order numbers across sessions
+
+### 1. Identification
+- **Name**: `sequential_order_number`
+- **Complexity**: `medium`
+- **Source**: `src/hooks/useNextOrderNumber.js`. Template sections “ORDER NUMBER GENERATION” and “FILE STRUCTURE – hooks/useNextOrderNumber.js”.
+
+### 2. Condition fulfilled
+- **User need**: Each order receives a unique, human‑readable sequential number (e.g., #1, #2, #3) that increments across app restarts and offline periods, making it easy for the cashier and customer to reference.
+- **Exact technical condition**: On cashier login, the hook fetches the highest existing `orderNumber` from three sources: Firebase `orders` collection (query `orderBy("orderNumber","desc")` limit 1), the local `writeQueue` (pending offline orders), and the local `orders` store (already synced orders). It returns `max + 1`. This number is used for the next order, survives app closure, and is stored with the order document. The algorithm assumes a single cashier; collision protection is not implemented.
+
+### 3. Implementation pattern
+- **Key technologies / APIs**: Firestore `getDocs` with `orderBy` and `limit`, IndexedDB `getAll` from `writeQueue` and `orders` store (using `orderNumber` index).
+- **Core code sketch** (minimal):
+  ```js
+  async function fetchMaxOrderNumber() {
+    let max = 0;
+    // Firebase
+    const q = query(collection(db, "orders"), where("shopId", "==", SHOP_ID), orderBy("orderNumber", "desc"), limit(1));
+    const snapshot = await getDocs(q);
+    if (!snapshot.empty) max = snapshot.docs[0].data().orderNumber;
+    // Write queue
+    const queue = await getQueue();
+    for (const item of queue) {
+      if (item.orderData.orderNumber > max) max = item.orderData.orderNumber;
+    }
+    // Local orders cache (optional, for safety)
+    const localDb = await openDB();
+    if (localDb.objectStoreNames.contains("orders")) {
+      const tx = localDb.transaction("orders", "readonly");
+      const index = tx.objectStore("orders").index("orderNumber");
+      const last = await index.openCursor(null, "prev");
+      if (last && last.value.orderNumber > max) max = last.value.orderNumber;
+    }
+    return max + 1;
+  }
+  ```
+- **File structure / hooks**:
+  - `hooks/useNextOrderNumber.js` – the hook.
+  - `db/queueService.js` – `getQueue` used to read pending orders.
+  - `db/indexedDB.js` – `orders` store must have an index on `orderNumber`.
+
+### 4. Setup commands (if any)
+- **Install**: None beyond existing Firebase and IndexedDB.
+- **Initialisation**: Firestore composite index on `shopId` (ascending) + `orderNumber` (descending) must be created (see template prerequisites). IndexedDB index on `orderNumber` is created in `onupgradeneeded`.
+- **Browser/API permissions**: None.
+
+### 5. Known limits and edge cases
+- **What it does NOT handle**:  
+  - **Multi‑cashier collision**: If two cashiers generate numbers simultaneously while offline, they may produce the same `orderNumber`. This is documented as a v1 limitation and assumes a single cashier.  
+  - If the write queue contains an order with a very high number (e.g., from a different device), the algorithm may skip numbers, but it will never reuse a number.  
+  - Does not use Firestore atomic counters; purely client‑side aggregation.
+- **Fails gracefully**: If any of the sources fail to read (e.g., IndexedDB error), the hook falls back to `max = 0` and returns 1, logging an error. Ordering continues, but numbers may reset.
+- **Scalability ceilings**: The aggregation loops over the entire write queue (expected <100 items) and reads one document from Firestore – efficient. The local orders store lookup using an index is O(log n).
+
+### 6. Dependencies on other fulfillers
+- **Depends on**:  
+  - `firebase_initialisation` – Firestore must be configured.  
+  - `indexed_db_setup` – `orders` store must have `orderNumber` index, `writeQueue` store must exist.  
+  - `offline_write_queue` – the write queue must be readable to include pending orders.
+- **Must be present before use**:  
+  - Firestore composite index on `shopId` + `orderNumber` must be created.  
+  - At least one order must exist in the system (otherwise `max` remains 0 and first order gets #1).
+
+### 7. Verification / test
+- **Human verification**:  
+  1. Clear all orders (Firebase and local) – cashier login, first order should be #1.  
+  2. Create several orders online – numbers should increment (1,2,3…).  
+  3. Go offline, create an order – it should receive the next number (e.g., #4).  
+  4. Create another offline order – #5.  
+  5. Check that the `writeQueue` contains these orders with correct numbers.  
+  6. Go online, flush queue – the same numbers should appear in Firebase.  
+  7. Close and reopen cashier – the next order number should continue from the highest seen (#6).  
+  8. To test collision (if you had two devices), you would need a second cashier – not supported in v1, but you can observe that the algorithm does not prevent it.
+
+### 8. References in the source
+- **Template (v2.0) quotes**:  
+  - Section “ORDER NUMBER GENERATION”: “On cashier login — fetch highest existing orderNumber from both Firebase and local write queue. Take the maximum. Increment locally for each new order… Not collision-safe under concurrent multi-cashier use — acceptable for v1.”  
+  - Section “FIREBASE DATA STRUCTURE”: “orderNumber: number (sequential, auto-incremented).”
+- **Code references** (from chat):  
+  - `src/hooks/useNextOrderNumber.js` – the complete implementation.  
+  - `src/db/indexedDB.js` – `orders` store with `orderNumber` index.  
+  - `src/firebase/orderService.js` – queries for max orderNumber.
+
+---
+

@@ -1,0 +1,193 @@
+TEMPLATE: SariSuki
+Description: Offline‑first two‑role app for sari‑sari stores. Seller tracks utang (credit), manages pabili orders (buyer requests), and notes barya (change) status. Buyer views personal utang balance and places pabili orders from store catalog. No internet, no forced daily sales. Phase 1 MVP: utang + pabili + barya tracker. Quick Sale (tingi) in Phase 2.
+Version: 1.0 (MVP Phase 1)
+React Version: 18+
+Mental Models Document Version: 2.0
+
+---
+
+PREREQUISITES
+
+- Vite + React project (not Create React App)
+- No backend – all data stored in localStorage (offline‑first)
+- No external UI library – inline style objects or minimal CSS modules (flexible, but no heavy component libs)
+- Target environment: mobile browser (PWA) and optionally Android APK via Capacitor (no native export bridges needed for MVP)
+- No login system – role chosen at launch via toggle; seller area protected by a simple password (stored in localStorage, set on first use)
+- Offline‑first: all reads/writes to localStorage; no network requests
+- Dark/light mode optional – not forced; default to system preference or light mode with good contrast (sari‑sari stores often use phones in bright light)
+
+---
+
+FIXED IDEAS (non‑negotiable for Phase 1)
+
+1. The app has two roles: **seller** (tindera/tindero) and **buyer** (suki). Role is selected at launch via a toggle switch. No mixing of roles within a session.
+
+2. Seller area is protected by a password. On first seller launch, the user sets a 4‑6 digit PIN or simple password. On subsequent launches, seller must enter the password to access seller functions. Buyer area has no password.
+
+3. All data lives in the browser’s localStorage. No external database, no sync. Data structure:
+   - `storeProfile`: { storeName, products: [{ id, name, price, isActive }], passwordHash }
+   - `buyers`: [{ id, name, phone (optional), createdAt, totalUtang, utangHistory: [{ amount, date, dueDate, note, status, paymentDate }], pabiliOrders: [{ id, items: [{ productId, name, qty }], totalPrice, status, createdAt, readyAt, pickedUpAt }] }]
+   - `baryaTracker`: { lowCoins: string[], lowBills: string[] } – e.g., ["₱1","₱5","₱10"], ["₱20"]
+
+4. Utang (credit) rules:
+   - Seller adds utang to a buyer: amount, optional due date, optional note.
+   - Buyer sees only their own utang balance and history (cannot see other buyers).
+   - Partial/full payment can be recorded by seller; payment reduces `totalUtang` and adds a payment entry to `utangHistory`.
+   - No interest or late fees in MVP – just recording.
+
+5. Pabili orders (buyer requests):
+   - Buyer composes an order from the store’s product catalog (products list managed by seller).
+   - Buyer submits order → status `pending`.
+   - Seller sees pending orders, can mark `ready` (optionally adjust price if actual cost differs).
+   - Buyer sees order status: pending → ready → picked up.
+   - When buyer picks up, seller marks `picked up`. Order is archived but visible in history.
+
+6. Barya tracker:
+   - Simple checklist of common coin/bill denominations (₱1,₱5,₱10,₱20,₱50,₱100,₱200,₱500,₱1000).
+   - Seller taps to toggle “low on this denomination”.
+   - No automatic deduction, just a reminder to get change from the bank.
+
+7. No Quick Sale (Tingi mode) in Phase 1. That is Phase 2 and will be added as a separate template extension.
+
+8. State placement follows Model 4 strictly:
+   - `role` (seller/buyer) and `isAuthenticated` (for seller) live in App.
+   - All store data (buyers, products, utang, orders, barya) lives in a custom provider or lifted to App, then passed down via props to seller/buyer dashboards.
+   - Buyer‑specific views only receive the current buyer’s data (filtered by id).
+
+9. No file imports/exports in Phase 1 (unlike INSIGHTLY). Data never leaves the device. Backup/restore is a future feature.
+
+10. Seller has a settings screen accessible from seller dashboard, password‑protected:
+    - Edit store name
+    - Manage products (add, edit price, delete – soft delete with isActive flag)
+    - Change seller password (re‑enter current, then new)
+    - Reset all data (danger zone, confirm twice)
+
+11. Buyer does not have a settings screen. Buyer only sees their own dashboard with balance, history, and order placement.
+
+12. Navigation is simple: 
+    - Seller dashboard shows tabs: Utang (list of buyers, add utang, record payment), Pabili Orders (pending/ready/picked up), Barya Tracker, Products, Settings.
+    - Buyer dashboard shows: My Balance, Utang History, Place Pabili Order, My Orders (status).
+
+---
+
+FILE STRUCTURE (suggested, but can be adapted)
+
+React source (src/):
+  App.jsx                – role selection, authentication gate, routes or conditional rendering
+  contexts/
+    StoreContext.jsx     – provides store data, buyers, orders, products, and dispatch functions
+  components/
+    common/
+      Button.jsx, Card.jsx, Input.jsx, PinPad.jsx (optional)
+    seller/
+      SellerDashboard.jsx
+      UtangList.jsx
+      AddUtangForm.jsx
+      PaymentForm.jsx
+      PabiliOrderManager.jsx
+      BaryaTracker.jsx
+      ProductManager.jsx
+      SellerSettings.jsx
+    buyer/
+      BuyerDashboard.jsx
+      BuyerBalance.jsx
+      BuyerUtangHistory.jsx
+      PlaceOrderForm.jsx
+      BuyerOrders.jsx
+  hooks/
+    useLocalStorage.js    – generic hook for reading/writing localStorage
+    useAuth.js            – seller password check
+  utils/
+    storage.js            – keys, initial data structure
+    helpers.js            – date formatting, totals calculation
+
+No CSS framework; either inline styles or a single .module.css file per component.
+
+---
+
+CUSTOMIZATION POINTS
+
+These are the only things that should change between deployments or store types:
+
+1. Store name – editable by seller in Settings
+2. Product list – item names, prices, active status (managed by seller)
+3. Denomination list for barya tracker – could be customized per region (e.g., no ₱200 bill if uncommon)
+4. Password length – default 4–6 digits, can be changed in Settings (but not enforced beyond form validation)
+5. UI color scheme – accent color (e.g., #f4a261 for warmth), background, card style (rounded corners)
+6. Currency symbol – default ₱ (PHP), but could be changed to $, etc., in a single constant
+
+---
+
+MENTAL MODEL MAPPING
+
+Model 1 (UI is a function of state)
+  Seller dashboard UI derives from: buyers array, orders array, products array, barya low flags
+  Buyer dashboard UI derives from: currentBuyer object (utangHistory, orders, totalUtang)
+
+Model 2 (Components are reusable UI descriptions)
+  UtangList is reused for both seller’s full list and buyer’s personal history (filtered)
+  OrderCard reused for pending/ready/picked up statuses
+  ProductRow reused in product management and order placement forms
+
+Model 3 (State vs regular variable)
+  State: buyers, orders, products, barya low flags, isAuthenticated, role, currentOrderItems
+  Regular variables: computed totalUtang (derived from utangHistory), order total price (sum of product prices × qty)
+
+Model 4 (State lives where it needs to be shared)
+  All store data (buyers, products, orders, barya) lifted to StoreContext (or App) because seller and buyer both need read access, and seller needs write access.
+  `currentBuyerId` lives in BuyerDashboard (not global) because only buyer’s own data is shown.
+
+Model 5 (State is temporary, files are permanent)
+  localStorage is the permanent store. State is loaded on app start and saved on every change (debounced or after each action). If the user clears browser data, all data is lost – that’s a known limitation (backup/restore planned for later).
+
+Model 6 (Props flow down, events flow up)
+  StoreContext provides state and dispatch; components call dispatch actions (e.g., addUtang, markOrderReady). Event callbacks flow up through context functions.
+
+Model 7 (useEffect for side effects)
+  useEffect used to persist data to localStorage whenever storeData changes (with debounce to avoid excessive writes).
+  Also used to load initial data from localStorage on app mount.
+
+Model 8 (Lists need keys)
+  Buyer list key: buyer.id; Order list key: order.id; Utang history entries: index or timestamp.
+
+Model 9 (Controlled inputs)
+  All forms (add utang, add product, place order, edit product, login password) use controlled inputs with local form state or reducer.
+
+Model 10 (Component lifetime)
+  When seller logs out (by returning to role selection), all seller data stays in localStorage but the authenticated state is cleared. When buyer uses the app, no authentication state persists.
+
+Model 11 (Data fetching – three states)
+  No network fetching. Instead, three states for data loading from localStorage: loading (first read), ready (data loaded), error (corrupt storage). Show loading spinner on first mount.
+
+Model 12 (Custom hooks)
+  useLocalStorage – abstraction for reading/writing with JSON serialization and error handling.
+  useAuth – manages password verification and session.
+
+Model 13 (Context)
+  StoreContext is used because store data is needed across many components at different depths (seller and buyer trees). This is appropriate because the data is global to the app and changes rarely (utang/orders change frequently but still need wide access). No performance issues in MVP as the data set is small.
+
+---
+
+ANTI-PATTERNS (forbidden)
+
+- Any network requests or external APIs – offline‑first means zero dependency on internet.
+- Allowing a buyer to see other buyers’ utang or orders.
+- Storing passwords in plain text – a simple hash (e.g., SHA‑256 via SubtleCrypto) or at least a non‑reversible obfuscation should be used; plain text is forbidden.
+- Using array index as key for any list that can be reordered or filtered.
+- Direct mutation of state – always use setter functions or dispatch.
+- useEffect without dependency array (unless intentionally empty for mount).
+- Seller dashboard components performing direct writes to localStorage – all writes go through context actions.
+- Forgetting to handle the case where localStorage is full or corrupted – show error and offer reset.
+
+---
+
+VERSION DRIFT NOTES
+
+- If Phase 2 (Quick Sale) is added, this template will need to be extended with product stock tracking, sale recording, and potentially a different data model. That should be a separate template version (2.0) or a new template named `SariSuki_Tingi`.
+- If the app is later ported to Capacitor for APK, the localStorage persistence remains; but file export for backup would need a native bridge (similar to INSIGHTLY’s export flow). Add that as a customization point.
+- If a future version introduces multi‑device sync, the mental model will shift from offline‑first to eventual consistency – a major change.
+- React 19 might change useReducer or context performance; review before upgrading.
+
+---
+
+END OF TEMPLATE

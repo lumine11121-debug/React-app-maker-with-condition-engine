@@ -1,0 +1,223 @@
+TEMPLATE: INSIGHTLY
+Description: Mobile-first data analytics viewer with two roles — analyst (builds reports) and client (views reports). Analyst loads a CSV, configures horizontal bar charts, writes plain-English insights, and exports a single .insightly file. Client loads that file and views clean graphs with swipe navigation and an insight toggle. Dark mode only. Portrait-first.
+Version: 1.1
+React Version: 18+
+Mental Models Document Version: 2.0
+
+---
+
+PREREQUISITES
+
+- Vite + React project (not Create React App)
+- No UI library. All styling is inline CSS-in-JS using style objects. (This is a fixed idea; see below.)
+- No state management library. Lifting state and props only.
+- No backend. All data is local — CSV files on device, .insightly files shared manually.
+- Target environments: mobile browser (PWA) and Android APK via Capacitor.
+- Dark mode only. Background #0f0f0f. Surfaces #161616 and #1a1a1a. Text #e0e0e0. Accent #2272c3.
+- Portrait-first. Max width 390px centered. Min height 100vh.
+
+---
+
+FIXED IDEAS (non-negotiable)
+
+1. The app has two roles: analyst and client. Role is selected at launch and determines everything that follows. No mixing of roles after selection.
+
+2. The launch screen shows two role cards only. No other UI. Selecting a role mounts the corresponding component and unmounts the launch screen.
+
+3. The client viewer is read-only with zero editing controls. If it can be edited it does not belong in the viewer.
+
+4. The analyst builder has two modes: build and preview. Preview shows exactly what the client sees — the same viewer component, same data, no extra controls visible.
+
+5. The .insightly file is the only bridge between analyst and client. It contains both the report configuration (graphs, insights, stats) and the raw data rows from the CSV. One file, everything inside.
+
+6. The analyst side is the only place a CSV is ever loaded. The client never sees or loads a CSV.
+
+7. Every graph has exactly these properties: id, title, dimension (which column to group by), measure (which column to calculate), aggregation (sum or average), chartType (bar only in v1), insight (plain text string), stats (array of label/value pairs).
+
+8. State placement follows Model 4 strictly. Role state lives in App. Builder state (csvRows, graphs, reportTitle) lives in Builder. Viewer state (graphIndex, showInsight, animated) lives in Viewer. Nothing crosses these boundaries through global state.
+
+9. The viewer processes chart data from the .insightly file at load time via a custom hook. The hook returns the processed report with chartData arrays attached to each graph object. No processing happens during render.
+
+10. The builder processes chart data on the fly during preview. The PreviewViewer sub-component inside Builder receives csvRows and graphs as props and computes chartData itself. This keeps preview always in sync with current builder state without requiring an export step.
+
+11. Export uses the native Android share bridge (window.AndroidExport) when running as a Capacitor APK, Web Share API when running as a PWA in a mobile browser, and a blob download as the desktop fallback. The export function checks for these in order.
+
+12. Navigation between graphs in the viewer uses both touch swipe (onTouchStart, onTouchMove, onTouchEnd with a 50px threshold) and Prev/Next buttons simultaneously. Both always present.
+
+13. The graph position indicator uses dots. The active dot is wider than inactive dots. No numbers as primary navigation indicator.
+
+14. Bar charts animate from zero width to full width on mount and on every graph change. Animation is triggered by a boolean state variable (animated) toggled via useEffect watching graphIndex.
+
+15. All CSV parsing and column type detection happens in the Builder only, never in the Viewer. Column type detection samples the first 10 rows — text columns become dimension options, number columns become measure options.
+
+---
+
+FILE STRUCTURE (fixed, do not rename or reassign roles)
+
+React source (src/):
+  App.jsx              — launch screen, role state, mounts Builder or Viewer
+  Builder.jsx          — analyst editor, contains GraphEditor and PreviewViewer as sub-components
+  Viewer.jsx           — client view, read-only, loads .insightly file
+  useInsightly.js      — custom hook, reads and processes .insightly file for Viewer
+  index.css            — body background only (#0f0f0f), no other styles
+
+Capacitor native layer (android/...):
+  android/app/src/main/java/com/insightly/app/MainActivity.java — adds AndroidExport JavaScript interface for native file export. This file is part of the native Android project, not the React source. It must be present for APK export to work.
+
+---
+
+COMPONENT ROLES
+
+App.jsx
+  State: role (null | "analyst" | "client")
+  Renders: launch screen when role is null, Builder when analyst, Viewer when client
+  Passes to Builder: onExit function that resets role to null
+  Passes to Viewer: onExit function that resets role to null
+
+Builder.jsx
+  State: mode (build | preview), csvRows, columnTypes, graphs, reportTitle, editingGraph, error
+  Sub-components (defined inside Builder.jsx, not separate files):
+    GraphEditor — form for editing one graph, receives graph and columnTypes as props, calls onSave and onDelete up
+    PreviewViewer — reads from props (graphs, csvRows, reportTitle), computes chartData on the fly, renders same UI as Viewer
+  Modes: build mode shows the editor UI, preview mode renders PreviewViewer
+  The mode toggle lives in the header, always visible, switches without navigation
+
+Viewer.jsx
+  State: graphIndex, showInsight, animated
+  Hook: useInsightly — returns { report, error, loadFile }
+  Renders: file loader when no report loaded, graph view when report loaded
+  No editing, no CSV loading, no configuration of any kind
+
+useInsightly.js
+  Input: a .insightly file object
+  Output: { report, error, loadFile }
+  Processing: parses JSON, groups raw data rows by each graph's dimension column, applies sum or average, sorts results, attaches chartData array to each graph object
+  Month sorting: if dimension column is a month name column, sort by calendar order not by value
+
+---
+
+CUSTOMIZATION POINTS
+
+These are the only things that should change between deployments or client projects:
+
+1. Report title — set by analyst in Builder, stored in .insightly file, shown in Viewer header
+2. Insight text — written by analyst per graph in GraphEditor, stored in graph.insight
+3. Stat cards — added by analyst per graph in GraphEditor, stored in graph.stats array
+4. CSV column names — whatever columns the CSV has, Builder detects them automatically
+5. App name — currently "Insightly", change in capacitor.config.json and vite.config.js manifest
+6. Accent color — currently #2272c3, used on active dots, bar gradient, insight tag, buttons
+7. Android package ID — currently com.insightly.app, change in capacitor.config.json and android/app/build.gradle (also update the folder path in android/app/src/main/java/com/insightly/app/)
+
+---
+
+MENTAL MODEL MAPPING
+
+Model 1 (UI is a function of state)
+  Viewer UI derives from: graphIndex, showInsight, animated, report
+  Builder UI derives from: mode, csvRows, graphs, editingGraph, reportTitle, error
+
+Model 2 (Components are reusable UI descriptions)
+  GraphEditor is reused for every graph edit regardless of which graph is selected
+  PreviewViewer is the same UI as Viewer but driven by props instead of a file
+
+Model 3 (State vs regular variable)
+  State: everything that changes the screen (graphIndex, showInsight, mode, graphs, etc.)
+  Regular variables: fileName string inside export function, loop counters, derived calculations
+
+Model 4 (State lives where it needs to be shared)
+  role in App — both Builder and Viewer need it via onExit
+  graphs in Builder — only analyst side needs it while building
+  graphIndex in Viewer — only Viewer needs it
+  No state is shared between Builder and Viewer directly — the .insightly file is the bridge
+
+Model 5 (State is temporary, files are permanent)
+  All Builder state is lost if the app closes without exporting
+  The .insightly file is the permanent record
+  Known improvement: auto-save Builder state to localStorage as draft on every change, restore on mount
+
+Model 6 (Props flow down, events flow up)
+  onExit flows down from App to Builder and Viewer
+  onSave and onDelete flow down from Builder to GraphEditor
+  GraphEditor calls onSave(updatedGraph) up to Builder on save
+  PreviewViewer receives graphs and csvRows as props from Builder
+
+Model 7 (useEffect for side effects)
+  Bar animation: useEffect watching graphIndex resets animated to false then sets it to true after 120ms
+  showInsight reset: useEffect watching graphIndex resets showInsight to false on graph change
+  File processing: useInsightly hook processes file data in a FileReader callback, not in useEffect
+
+Model 8 (Lists need keys)
+  Bar chart items: key is item.name (drink name, month name, day type — always unique per graph)
+  Graph list in Builder: key is graph.id (Date.now() at creation time)
+  Stat cards: key is stat.label
+
+Model 9 (Controlled inputs)
+  Report title input: controlled, value bound to reportTitle state
+  Graph title input: controlled, value bound to form.title in GraphEditor local state
+  Insight textarea: controlled, value bound to form.insight
+  Dimension and measure selects: controlled, value bound to form.dimension and form.measure
+  File inputs (CSV and .insightly): uncontrolled, read via onChange only
+
+Model 10 (Component lifetime)
+  GraphEditor mounts fresh every time a graph is selected for editing
+  GraphEditor unmounts on Save or Back — unsaved changes are lost if user navigates away without saving
+  Viewer unmounts when client taps Back — loaded report is gone, must reload file on return
+  Known improvement: warn user before unmounting GraphEditor if unsaved changes exist
+
+Model 11 (Data fetching — three states)
+  useInsightly returns report (success), error (failure), and null report with no error (loading/idle)
+  Builder CSV loading uses the same three-state pattern: csvRows (success), error (failure), null (idle)
+
+Model 12 (Custom hooks)
+  useInsightly — all .insightly file reading and processing logic for Viewer
+  CSV parsing and column detection are functions inside Builder.jsx, not hooks, because they are called once on file load not on state change
+
+Model 13 (Context)
+  Not used. No global theme, no auth, no deeply nested shared state. Props are sufficient.
+
+---
+
+ANTI-PATTERNS (forbidden in this app)
+
+- Fetching or file reading inside component body — always in a callback or custom hook
+- Using array index as a key for any list
+- Directly mutating state — always use the setter function
+- useEffect without a dependency array
+- Any editing UI inside Viewer — viewer is read-only, no exceptions
+- Global state library — lifting state and props only
+- Passing the entire report or CSV through multiple component layers — process at the right level and pass only what each component needs
+- Sharing state between Builder and Viewer through React state — the .insightly file is the only bridge
+- Styling that is not inline style objects (no CSS files except index.css for body background)
+
+---
+
+EXPORT FLOW (fixed, do not change the order of checks)
+
+1. Check window.AndroidExport — if present, call window.AndroidExport.exportFile(base64Data, fileName). This is the Capacitor APK path. Uses a JavaScript interface bridge in MainActivity.java that writes directly to Android Downloads via MediaStore. No storage permission needed on API 29+.
+2. Check navigator.share and navigator.canShare — if present and file sharing is supported, use Web Share API with a File object. This is the PWA mobile path.
+3. Fallback — create a blob URL, attach to an anchor element with download attribute, simulate click. This is the desktop browser path.
+
+---
+
+KNOWN ISSUES AND PLANNED IMPROVEMENTS
+
+1. Builder state is lost if app closes without exporting. Fix: auto-save to localStorage on every graphs array change, restore on Builder mount.
+2. GraphEditor unsaved changes are silently lost on Back. Fix: check if form differs from original graph, warn user before discarding.
+3. Client file loading flow on mobile needs end-to-end verification. The .insightly extension may not be recognized by all file pickers on all Android versions.
+4. Viewer does not warn when navigating Back if the user might want to stay. Minor UX issue.
+5. Only horizontal bar charts exist in v1. Line charts and pie charts are the next chart types to add.
+6. No time period filtering in viewer. Analyst sets the full dataset, client cannot filter.
+7. No report branding. Analyst cannot add client logo or custom colors per report.
+
+---
+
+VERSION DRIFT NOTES
+
+- If Capacitor's WebView behavior changes on Android, re-evaluate the export flow. The AndroidExport bridge is the most fragile part of the export chain.
+- If the mental models document adds a new Tier 1 model, re-evaluate the mental model mapping section.
+- If React changes useEffect cleanup behavior in a major version, review the animation useEffect in Viewer and Builder PreviewViewer.
+- If the .insightly format needs a new field, add it to the graph object definition in Fixed Idea 7 and update useInsightly.js processing logic.
+
+---
+
+END OF TEMPLATE

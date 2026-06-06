@@ -1,0 +1,78 @@
+## 3. incremental_sync_indexeddb | complex | Owner app fetches only new orders since last sync, atomic transaction
+
+### 1. Identification
+- **Name**: `incremental_sync_indexeddb`
+- **Complexity**: `complex`
+- **Source**: `src/db/syncService.js` (`incrementalSync` function), `src/hooks/useSync.js` (calls it on owner app open). Template section “INCREMENTAL SYNC” and “syncService.js” in file structure.
+
+### 2. Condition fulfilled
+- **User need**: Owner sees all historical orders without waiting for a full download each time; after first install, only new orders since last visit are fetched, keeping startup fast and minimizing Firebase reads.
+- **Exact technical condition**: On each owner app open (after first sync), the app reads `lastSyncTimestamp` from IndexedDB `syncMeta` store. It queries Firestore for orders with `timestamp > lastSyncTimestamp` (ordered ascending). New orders are written to the local `orders` store inside an IndexedDB transaction, and `lastSyncTimestamp` is updated to the newest order’s timestamp. The operation is atomic: either all new orders and the timestamp are written, or none are.
+
+### 3. Implementation pattern
+- **Key technologies / APIs**: Firestore `getDocs` with `where("timestamp", ">", lastTimestamp)`, IndexedDB transactions, `Timestamp` comparison.
+- **Core code sketch** (minimal):
+  ```js
+  async function incrementalSync() {
+    const lastTimestamp = await getLastSyncTimestamp();
+    if (!lastTimestamp) return { count: 0 };
+    const newOrders = await getOrdersSince(lastTimestamp);
+    if (newOrders.length === 0) return { count: 0 };
+    const db = await openDB();
+    const tx = db.transaction(["orders", "syncMeta"], "readwrite");
+    const ordersStore = tx.objectStore("orders");
+    for (const order of newOrders) {
+      await ordersStore.put(order);
+    }
+    const newLastTimestamp = newOrders[newOrders.length - 1].timestamp;
+    const syncStore = tx.objectStore("syncMeta");
+    await syncStore.put({ id: "sync", lastSyncTimestamp: newLastTimestamp, ... });
+    await new Promise(resolve => { tx.oncomplete = resolve; });
+    return { count: newOrders.length };
+  }
+  ```
+- **File structure / hooks**:
+  - `db/syncService.js` – `incrementalSync`, `getLastSyncTimestamp`, `updateSyncMeta`.
+  - `hooks/useSync.js` – calls `incrementalSync` on mount if `firstSyncComplete` is true.
+  - `db/indexedDB.js` – defines `orders` store with index on `timestamp`.
+
+### 4. Setup commands (if any)
+- **Install**: No extra packages; uses existing Firebase and IndexedDB.
+- **Initialisation**: IndexedDB must be opened with `orders` store and `syncMeta` store. The first install sync sets `firstSyncComplete` and initial `lastSyncTimestamp`.
+- **Browser/API permissions**: None; all client‑side.
+
+### 5. Known limits and edge cases
+- **What it does NOT handle**:  
+  - If the atomic transaction fails (e.g., disk full), the sync may be partially written; the code attempts to revert but does not have rollback. In practice, the transaction either commits or aborts, so it's safe.  
+  - Does not handle very large batches (>500 orders) because `getOrdersSince` in `orderService.js` does not paginate. In v1, we assume small daily order volume.  
+  - If the user has multiple devices, each device maintains its own `lastSyncTimestamp` and local orders store; they are independent and may have different sync points – acceptable.
+- **Fails gracefully**: If Firestore query fails, the function throws and sync is retried on next app open. No data is lost.
+- **Scalability ceilings**: Each incremental sync reads exactly 1 document per new order. Over a year of daily use, total reads ~ 365 * dailyOrders.
+
+### 6. Dependencies on other fulfillers
+- **Depends on**:  
+  - `indexed_db_setup` – must have `orders` store with `timestamp` index and `syncMeta` store.  
+  - `firebase_initialisation` – Firestore must be configured.  
+  - `first_install_bulk_sync` – must run first to populate initial `orders` store and set `firstSyncComplete`.
+- **Must be present before use**:  
+  - `firstSyncComplete` must be `true` (i.e., first install sync completed).  
+  - Composite index on `shopId` + `timestamp` must exist in Firestore.
+
+### 7. Verification / test
+- **Human verification**:  
+  1. Perform first install sync (clear IndexedDB, open owner dashboard – should see loading screen).  
+  2. After first sync completes, create a new order as cashier.  
+  3. Close and reopen owner dashboard – the new order should appear without re‑downloading all historical orders.  
+  4. Check console or network tab: only the new order(s) are fetched.  
+  5. Repeat with multiple new orders – only those since last sync are fetched.  
+  6. Simulate network interruption during incremental sync – the transaction should abort; on next open, sync resumes from last successful timestamp (no duplicates).
+
+### 8. References in the source
+- **Template (v2.0) quotes**:  
+  - Section “INCREMENTAL SYNC (owner side, on every app open)”: “Read lastSyncTimestamp from syncMeta. Query Firebase: orders where timestamp > lastSyncTimestamp… Open IndexedDB transaction (atomic). Write all new order documents… Update lastSyncTimestamp… Commit transaction.”  
+  - Section “ATOMICITY IS NON-NEGOTIABLE”: “Wrap every sync write in an IndexedDB transaction.”
+- **Code references** (from chat):  
+  - `src/db/syncService.js` – `incrementalSync` function.  
+  - `src/hooks/useSync.js` – triggers sync on owner mount.  
+  - `src/db/indexedDB.js` – stores and indexes.
+

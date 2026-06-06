@@ -1,0 +1,258 @@
+TEMPLATE: PAMALENKE_TRACKER
+Description: Session‑based market trip tracker for shoppers. Set a budget (optional), plan a shopping list (items + quantities), then during the trip enter actual prices paid. End session with one tap to save data to CSV. A dedicated Graphs section shows hardcoded bar charts of spending by session, day, week, month, and year – all updated in real time from saved sessions. Optional receipt view per session (item list, read‑only). No internet, no accounts. Offline‑first PWA + Android APK. Built with React + Capacitor + IndexedDB + canvas/Chart.js.
+Version: 1.0
+React Version: 18+
+Mental Models Document Version: 2.0
+
+---
+
+PREREQUISITES
+
+- Vite + React project (not Create React App)
+- Styling: inline style objects (no CSS files except index.css for body background). Follows Insightly dark mode palette.
+- No state management library – lifting state and props only.
+- No backend. All session data stored in IndexedDB and exportable as CSV.
+- Target environments: mobile browser (PWA) and Android APK via Capacitor.
+- Dark mode only: background #0f0f0f, surfaces #161616, text #e0e0e0, accent #2272c3.
+- Portrait-first. Max width 390px centered.
+
+---
+
+FIXED IDEAS (non-negotiable)
+
+1. The app has three main views (bottom tab bar):
+   - **New Trip** – start a new market session (budget, plan list, price entry)
+   - **Graphs** – view spending charts (by session/day/week/month/year)
+   - **Sessions** – list of past sessions (optional receipt view per session)
+
+2. Each session follows this exact workflow:
+   a. Set optional budget (number input, can skip)
+   b. Build shopping list: items with name (text), quantity (number, default 1), unit (optional text, e.g., "kg", "piece")
+   c. During market: for each planned item, user taps "Bought" and enters actual price paid (number)
+   d. User can add unplanned items on the fly (name, quantity, price)
+   e. End session with "Save & Finish" button
+   f. App calculates totals, saves session to IndexedDB, and (optionally) exports a CSV to device storage (Downloads folder via export fallback). CSV is saved only if user enables auto‑export; otherwise, CSV can be exported later from Sessions list.
+
+3. CSV schema (one row per purchased item). Fields:
+   session_id, session_date, budget, total_spent, item_name, quantity, unit, price_per_unit, total_item_cost, planned (TRUE/FALSE), note (optional)
+
+4. **Graphs section** is a core feature:
+   - It reads all saved sessions from IndexedDB (not from CSV files on disk, to avoid re‑parsing).
+   - Displays bar charts using a lightweight library (Chart.js or canvas – Chart.js is acceptable here because data shape is fixed).
+   - Chart types (toggle buttons or segmented control): By Session, By Day, By Week, By Month, By Year.
+   - By Session: X-axis = session label (e.g., "May 16 10:30"), Y-axis = total spent per session.
+   - By Day: sums all sessions that occurred on the same calendar date.
+   - By Week: sums per week (Monday–Sunday, ISO week).
+   - By Month: sums per month.
+   - By Year: sums per year.
+   - Graphs update in real time as new sessions are added (no refresh button needed – the Graphs view re‑queries IndexedDB on mount and after any session save event via a simple event emitter or context refresh).
+
+5. **Receipt view** (per session, read‑only):
+   - Available from Sessions list: tap a session row → shows a modal or new page with a list of items (name, quantity, price per unit, total).
+   - No editing after session ends.
+   - No cross‑session item aggregation or search – spelling variations make item names unreliable for analytics.
+
+6. All forms are controlled inputs (Model 9). Shopping list is dynamic array state.
+
+7. IndexedDB stores a `sessions` object store. Each session object includes:
+   - id (string, session_id)
+   - date (ISO date string)
+   - budget (number or null)
+   - totalSpent (number)
+   - items (array of item objects: name, quantity, unit, pricePerUnit, totalItemCost, planned, note)
+
+8. CSV export uses the same three‑layer fallback as Insightly: Capacitor native bridge → Web Share → blob download.
+
+9. No authentication. Single user, offline‑first.
+
+10. State placement (Model 4):
+    - App.jsx holds currentView state.
+    - NewTrip view holds all session‑in‑progress state (budget, plannedList, bought items).
+    - Graphs view calls custom hook `useSessions` to fetch all sessions and compute chart data.
+    - Sessions view calls `useSessions` to list sessions and handle receipt view.
+
+11. Graphs are hardcoded – no configuration UI. Grouping logic is pure functions: `groupBySession(sessions)`, `groupByDay(sessions)`, `groupByWeek(sessions)`, etc. Each returns an array of { label, total }.
+
+12. When a session is saved, the app emits a custom event (or refreshes a React context) so that Graphs and Sessions views can update if they are currently mounted. For simplicity, a `useSessions` hook can expose a `refresh` function that the NewTrip view calls after save.
+
+13. The planned list during trip creation can be edited (add, remove, change quantity) even after price entry has started – but items that already have a price cannot be deleted (user must delete price first). This is a design choice to prevent data loss.
+
+14. Budget display during trip: shows remaining budget (budget - sum of entered prices). No negative budget enforcement – just a warning color if exceeded.
+
+---
+
+FILE STRUCTURE (fixed)
+
+React source (src/):
+  App.jsx               – root, currentView state, bottom tab bar
+  NewTrip.jsx           – full workflow (budget step, plan step, price step)
+  Graphs.jsx            – chart view, period toggle, useSessions hook
+  Sessions.jsx          – list of past sessions, receipt modal
+  useSessions.js        – custom hook: fetch all sessions, addSession, refresh
+  db.js                 – IndexedDB wrapper (open, getAll, save, delete)
+  exportUtils.js        – CSV generation, share/download fallback, PDF? not needed here
+  chartHelpers.js       – grouping functions (bySession, byDay, etc.)
+  index.css             – body background #0f0f0f
+  main.jsx
+
+Capacitor native layer (optional, for APK):
+  android/... – same pattern as Insightly (export bridge)
+
+---
+
+COMPONENT ROLES
+
+NewTrip.jsx
+  State: step (budget|plan|shop), budget (optional), plannedItems (array), boughtItems (array, with prices), totalSpent, remainingBudget
+  Functions: addPlannedItem, removePlannedItem, markBoughtAndSetPrice, addUnplannedItem, saveSession (calls db.save + export CSV + emit refresh)
+  Renders different UI per step. Uses controlled forms for all inputs.
+
+Graphs.jsx
+  State: period (session|day|week|month|year)
+  Calls useSessions() to get sessions array.
+  Computes groupedData = groupByPeriod(sessions, period) using chartHelpers.
+  Renders bar chart (Chart.js or canvas). No configuration.
+
+Sessions.jsx
+  State: selectedSession (null for modal)
+  Calls useSessions() to get sessions list (sorted by date desc).
+  Renders list (each item shows date, total spent, number of items).
+  On tap, shows modal with receipt (list of items, read‑only).
+  Optionally has "Export CSV" button per session (calls exportUtils to save that session as CSV).
+
+useSessions.js
+  Custom hook:
+    - maintains sessions array, loading, error
+    - fetches from IndexedDB on mount
+    - listens for custom event "sessionSaved" (or uses a small event emitter) to refetch
+    - provides addSession (called by NewTrip) that saves to IndexedDB and dispatches event
+    - provides refresh()
+
+db.js
+  initDB() – creates "sessions" store with index on date.
+  getAllSessions()
+  saveSession(session)
+  deleteSession(id) – optional for future.
+
+exportUtils.js
+  generateCSV(session) – returns CSV string (including header row)
+  exportSessionAsCSV(session) – uses fallback to save file
+  exportAllSessionsAsCSV(sessions) – optional for bulk backup
+
+chartHelpers.js
+  groupBySession(sessions) → [{ label: session.id, total: session.totalSpent }]
+  groupByDay(sessions) → aggregates sessions by date
+  groupByWeek(sessions) → uses getWeek(date) helper
+  groupByMonth(sessions)
+  groupByYear(sessions)
+
+---
+
+CUSTOMIZATION POINTS
+
+If reusing this template for another client, you might change:
+
+1. Market categories – none, because items are free text. But you could change unit presets (e.g., kg, piece, bundle).
+2. Budget enforcement – currently just warning, could be strict blocking.
+3. Currency symbol – default ₱, change in UI.
+4. Graph colors – accent color changes bar color.
+5. Receipt layout – add or remove fields.
+6. CSV schema – add columns like "store_name" or "payment_method".
+
+Everything else (session workflow, graphs, offline, IndexedDB, export) stays the same.
+
+---
+
+MENTAL MODEL MAPPING
+
+Model 1 – UI is a function of state
+  NewTrip UI depends on step, budget, plannedItems, boughtItems.
+  Graphs UI depends on period and sessions array.
+
+Model 2 – Components are reusable
+  PlannedItemList and BoughtItemList are subcomponents inside NewTrip.
+  ReceiptModal reused per session.
+
+Model 3 – State vs regular variable
+  State: step, budget, plannedItems, boughtItems, period, sessions.
+  Regular: computed chart data (derived during render), CSV strings (generated on demand).
+
+Model 4 – State lives where it is shared
+  NewTrip holds all session-building state – not shared.
+  useSessions hook provides sessions to both Graphs and Sessions – state lives in the hook (which is per‑component, but the hook fetches from DB). No global context.
+
+Model 5 – State is temporary, files are permanent
+  IndexedDB is permanent. CSV export is the permanent portable record.
+
+Model 6 – Props flow down, events flow up
+  NewTrip passes onSaveSession up to App? No, NewTrip calls db directly and emits event.
+
+Model 7 – useEffect for side effects
+  Graphs view uses useEffect to fetch sessions on mount and on refresh event.
+  Chart drawing (if using canvas) happens in useEffect watching groupedData.
+
+Model 8 – Lists need keys
+  Planned items key = item.id (timestamp)
+  Sessions list key = session.id
+  Bar chart labels as keys (unique per period).
+
+Model 9 – Controlled inputs
+  All input fields (budget, item name, quantity, price, etc.) are controlled.
+
+Model 10 – Component lifetime
+  NewTrip unmounts after save – unsaved progress is lost (could warn, but MVP assumes user saves intentionally).
+
+Model 11 – Data fetching (three states)
+  useSessions returns loading, error, sessions – matches pattern.
+
+Model 12 – Custom hooks
+  useSessions, useChartData (optional, but can be inside Graphs).
+
+Model 13 – Context
+  Not used – custom hooks + events suffice.
+
+---
+
+ANTI-PATTERNS (forbidden)
+
+- Using array index as key.
+- useEffect without dependency array.
+- Direct state mutation.
+- Storing CSV files in IndexedDB (store session objects, generate CSV on demand).
+- Adding item name aggregation across sessions – spelling variations make it unreliable; forbidden.
+- Making graphs configurable – they are hardcoded by design.
+- Any online dependency – must work offline.
+- Allowing editing of a session after it is saved (read‑only receipt view only).
+
+---
+
+EXPORT FLOW (same as Insightly)
+
+1. Check window.AndroidExport → Capacitor native bridge.
+2. Check navigator.share → Web Share API.
+3. Fallback: blob download via <a download>.
+
+---
+
+KNOWN ISSUES AND PLANNED IMPROVEMENTS
+
+1. No editing of past sessions – read‑only. Future: allow correction of price mistakes within a short time window.
+2. No backup/restore of all sessions – user must export each CSV manually. Add bulk export zip.
+3. Item name free text leads to duplicates (e.g., "fish" vs "Fish") – but receipt view per session avoids aggregation.
+4. Canvas chart could be replaced with Chart.js for better mobile touch tooltips.
+5. Budget step cannot be skipped after setting – user must restart trip. Allow "skip budget" anytime before first price entry.
+6. No search/filter in Sessions list.
+7. Graph y-axis scaling: use max total from visible data.
+8. Offline CSV export on Android – the native bridge works but test thoroughly.
+
+---
+
+VERSION DRIFT NOTES
+
+- If IndexedDB quota becomes an issue with many sessions, add session deletion and CSV archival.
+- If Capacitor WebView changes file export behavior, re‑evaluate exportUtils fallback order.
+- If a new mental model is added to Tier 1, update mapping.
+
+---
+
+END OF TEMPLATE
