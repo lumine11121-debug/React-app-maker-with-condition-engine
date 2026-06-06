@@ -1,1 +1,11 @@
+# RESEARCHED FULFILLERS INDEX
+# Generated from spec files in fulfillers/Complex, fulfillers/Medium
+# Each line: name | complexity | description
 
+offline_write_queue | complex | Cashiers can confirm orders offline; orders saved locally and sync automatically when internet returns.
+incremental_sync_indexeddb | complex | Owner app fetches only new orders since last sync, using atomic transactions to avoid data gaps.
+first_install_bulk_sync | complex | Full historical sync from Firebase with batched pagination, progress reporting, and resume capability.
+realtime_firestore_sync | medium | Live updates for today’s data (owner dashboard, day period) using Firestore onSnapshot.
+menu_cache_offline_fallback | medium | Cashier sees cached menu when offline; updates from network when online.
+sequential_order_number | medium | Generate human‑readable sequential order numbers that persist across app restarts (single‑writer assumption).
+year_alltime_local_only | medium | Year and All Time summaries read from local IndexedDB only, zero Firebase reads.
