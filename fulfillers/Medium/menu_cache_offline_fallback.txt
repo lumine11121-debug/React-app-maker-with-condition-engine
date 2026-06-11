@@ -1,82 +1,44 @@
-## 6. menu_cache_offline_fallback | medium | Cashier sees cached menu when offline; updates when online
+# FULFILLER 
 
-### 1. Identification
-- **Name**: `menu_cache_offline_fallback`
-- **Complexity**: `medium`
-- **Source**: `src/hooks/useMenu.js`. Template sections “CASHIER SCREEN” and “DATA STORAGE ARCHITECTURE – Menu cache in local IndexedDB”.
+### 1. Name, version, complexity & purpose
+- **Name**: menu_cache_offline_fallback
+- **Version**: v1
+- **Complexity**: medium
+- **Purpose**: Show cached menu immediately when offline, then update from network when available.
 
-### 2. Condition fulfilled
-- **User need**: The cashier can see the full menu even when the device is offline, ensuring that order entry is never blocked by network hiccups. When online, menu changes from the owner appear automatically.
-- **Exact technical condition**: On cashier login, the app first reads the menu from the local `menuCache` IndexedDB store and displays it immediately. Simultaneously, it sets up a Firestore `onSnapshot` listener on the `menu` collection. When the snapshot receives data (online), it updates the React state and also writes the fresh menu to `menuCache`, overwriting the cache. When offline, the listener fails silently (or reconnects later) and the cached menu remains visible.
+### 2. Trigger conditions (ALL must be satisfied; use OR for alternatives)
+- Cashier screen displays menu: Yes
+- Offline availability is required: Yes
+- Menu data is small (<100 items): Yes
 
-### 3. Implementation pattern
-- **Key technologies / APIs**: IndexedDB (store `menuCache`), Firestore `onSnapshot`, React `useEffect` with cleanup.
-- **Core code sketch** (minimal):
-  ```js
-  useEffect(() => {
-    let unsubscribe = null;
-    async function loadFromCache() {
-      const db = await openDB();
-      const cached = await db.transaction("menuCache").objectStore("menuCache").getAll();
-      if (cached.length) setMenuItems(cached);
-    }
-    loadFromCache();
-    const q = query(collection(db, "menu"), where("shopId", "==", SHOP_ID));
-    unsubscribe = onSnapshot(q, async (snapshot) => {
-      const items = snapshot.docs.map(doc => ({ itemId: doc.id, ...doc.data() }));
-      setMenuItems(items);
-      // update cache
-      const cacheDb = await openDB();
-      const tx = cacheDb.transaction("menuCache", "readwrite");
-      await tx.objectStore("menuCache").clear();
-      for (const item of items) await tx.objectStore("menuCache").add(item);
-      await tx.done;
-    });
-    return () => unsubscribe && unsubscribe();
-  }, []);
-  ```
-- **File structure / hooks**:
-  - `hooks/useMenu.js` – encapsulates the cache‑then‑network logic.
-  - `db/indexedDB.js` – defines `menuCache` store with indexes on `category` and `outOfStock`.
-  - `cashier/CashierScreen.jsx` – consumes `useMenu`.
+### 3. When NOT to choose (disqualifiers)
+- Menu frequently changes while offline and users require real‑time updates → disqualify.
+- Menu size >1000 items (full cache may be heavy) → disqualify.
 
-### 4. Setup commands (if any)
-- **Install**: None beyond existing IndexedDB and Firebase.
-- **Initialisation**: IndexedDB database version must include `menuCache` store (created in `onupgradeneeded`).
-- **Browser/API permissions**: None.
+### 4. Dependencies (all required; OR allowed)
+- indexed_db_setup (menuCache store)
+- firebase_initialisation (for onSnapshot)
 
-### 5. Known limits and edge cases
-- **What it does NOT handle**:  
-  - If the cache is empty and the device is offline on first launch, the cashier screen will show “No menu items” (because there’s no cache yet). The template expects the owner to have added items before cashier use.  
-  - Menu changes made by the owner while the cashier is offline will not be visible until connectivity is restored and the `onSnapshot` updates the cache.  
-  - The cache is overwritten entirely on each snapshot; this is fine for small menus.
-- **Fails gracefully**: If the Firestore listener fails (e.g., permission denied), it falls back to the cache and shows a stale menu; no crash. If IndexedDB read fails, the component shows loading state and then attempts network fetch.
-- **Scalability ceilings**: The menu is expected to have <100 items, so storing/retrieving all items at once is fine.
+### 5. Edge cases / known limits (including graceful failure)
+- First launch offline → no cache → empty menu (owner must add items online first).
+- Cache may be stale if owner updates menu while cashier offline; updates appear when online.
+- Graceful failure: if IndexedDB fails, fallback to network only; if network fails, empty menu.
 
-### 6. Dependencies on other fulfillers
-- **Depends on**:  
-  - `indexed_db_setup` – must have `menuCache` store.  
-  - `firebase_initialisation` – Firestore must be configured with `menu` collection.
-- **Must be present before use**:  
-  - The menu collection in Firestore must have at least some items (owner must add them).  
-  - The cache may be empty on first run – not a bug, by design.
+### 6. Verification steps (user test)
+1. Load cashier screen online → menu appears and cache populated.
+2. Go offline, refresh cashier → menu appears from cache.
+3. While offline, toggle an item’s out of stock in owner dashboard.
+4. Go online on cashier → menu updates to reflect change.
 
-### 7. Verification / test
-- **Human verification**:  
-  1. Open cashier screen while online – menu appears (from network, cache is populated).  
-  2. Disable network (airplane mode or DevTools offline).  
-  3. Refresh cashier screen – menu should still appear (from cache).  
-  4. While offline, try to order – works (menu cached).  
-  5. Re‑enable network – menu should update if owner made changes (check by toggling out of stock in owner dashboard).  
-  6. Clear IndexedDB, then open cashier offline – “No menu items” message appears (expected).  
-  7. Go online – menu loads and cache is repopulated.
-
-### 8. References in the source
-- **Template (v2.0) quotes**:  
-  - Section “Menu cache in local IndexedDB”: “On cashier login with internet — fetch menu via onSnapshot, save to local IndexedDB simultaneously. If internet drops mid‑shift — cashier sees full menu from local cache.”  
-  - Section “FILE STRUCTURE”: `hooks/useMenu.js` – fetches menu items with onSnapshot, exposes items, categories, loading.  
-- **Code references** (from chat):  
-  - `src/hooks/useMenu.js` – the complete implementation.  
-  - `src/db/indexedDB.js` – `menuCache` store creation.
-
-
+### 7. Implementation sketch
+Optional (medium). Core:
+```js
+useEffect(() => {
+  loadCache();
+  const unsubscribe = onSnapshot(menuQuery, async (snap) => {
+    const items = snap.docs.map(...);
+    setMenuItems(items);
+    await updateCache(items);
+  });
+  return () => unsubscribe();
+}, []);
