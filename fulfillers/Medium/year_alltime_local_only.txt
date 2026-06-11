@@ -1,0 +1,39 @@
+# FULFILLER 
+
+### 1. Name, version, complexity & purpose
+- **Name**: year_alltime_local_only
+- **Version**: v1
+- **Complexity**: medium
+- **Purpose**: Display aggregated yearly or all‑time statistics using only local IndexedDB data (zero remote reads).
+
+### 2. Trigger conditions (ALL must be satisfied; use OR for alternatives)
+- User requests annual or lifetime summary: Yes
+- Local orders cache is already populated (first‑install sync completed): Yes
+
+### 3. When NOT to choose (disqualifiers)
+- User requires real‑time updates (e.g., includes today’s orders without a refresh) → disqualify.
+- First sync not yet complete → data may be incomplete; show warning instead of disqualifying? (Acceptable to show partial data with banner.)
+
+### 4. Dependencies (all required; OR allowed)
+- indexed_db_setup (orders store)
+- first_install_bulk_sync must have run at least once
+
+### 5. Edge cases / known limits (including graceful failure)
+- No orders → shows zero values.
+- Large dataset (>10k orders) → may cause UI lag (no pagination).
+- Graceful failure: if IndexedDB read fails, shows error message; no remote fallback by design.
+
+### 6. Verification steps (user test)
+1. Ensure first‑install sync completed.
+2. Click “YEAR” button → summary appears.
+3. Open browser Network tab → no Firestore requests.
+4. Add a new order, then re‑enter year screen → data unchanged until next sync (acceptable).
+
+### 7. Implementation sketch
+Optional (medium). Pattern:
+```js
+const allOrders = await getAllOrdersFromLocal();
+const now = new Date();
+const startDate = new Date(now.getFullYear(), 0, 1);
+const yearOrders = allOrders.filter(order => order.timestamp.toDate() >= startDate);
+const sections = deriveAllSections(yearOrders);
