@@ -1,74 +1,40 @@
+# FULFILLER TEMPLATE
 
-### 1. Identification
-- **Name**: `offline_write_queue`
-- **Complexity**: `complex`
-- **Source**: `src/db/queueService.js`, `src/hooks/useWriteQueue.js`, `src/cashier/OrderSummary.jsx`, `src/cashier/CashierScreen.jsx`; template sections “3. ORDER SUMMARY SCREEN” and “5. DATA STORAGE ARCHITECTURE”.
+### 1. Name, version, complexity & purpose
+- **Name**: offline_write_queue
+- **Version**: v1
+- **Complexity**: complex
+- **Purpose**: Save orders when offline and automatically sync them to Firebase when connection returns.
 
-### 2. Condition fulfilled
-- **User need**: Cashiers can confirm orders even when the device is offline; orders are saved locally and automatically sync when the internet connection returns, without manual intervention.
-- **Exact technical condition**: Orders created while `navigator.onLine === false` are stored in an IndexedDB `writeQueue` store. When the browser fires the `online` event (or a periodic check detects connectivity), the queue is flushed: each order is saved to Firestore, then added to the local `orders` cache, and removed from the queue. The operation is atomic per order.
+### 2. Trigger conditions (ALL must be satisfied; use OR for alternatives)
+- Offline record creation required: Yes
+- (Firebase as source of truth) OR (Supabase as source): Yes
+- User expects automatic sync on reconnect: Yes
 
-### 3. Implementation pattern
-- **Key technologies / APIs**: IndexedDB (via custom wrapper `openDB`), `window.online` / `window.offline` events, `navigator.onLine`, Firestore `addDoc`, `Promise` wrappers for IndexedDB async operations.
-- **Core code sketch** (minimal):
-  ```js
-  // addToQueue
-  const queueItem = { orderId: `local_${Date.now()}_${Math.random()}`, orderData, queuedAt: new Date() };
-  await db.transaction("writeQueue", "readwrite").objectStore("writeQueue").add(queueItem);
-  
-  // flushQueue
-  const queue = await getQueue(); // uses getAll() with Promise
-  for (const item of queue) {
-    const saved = await saveOrder(item.orderData);
-    await db.transaction("orders", "readwrite").objectStore("orders").put(saved);
-    await db.transaction("writeQueue", "readwrite").objectStore("writeQueue").delete(item.orderId);
-  }
-  ```
-- **File structure / hooks**:
-  - `db/queueService.js` – `addToQueue`, `getQueue`, `removeFromQueue`, `flushQueue`.
-  - `hooks/useWriteQueue.js` – exposes `queueLength`, `isOffline`, `flush`, `refreshQueueLength`. Listens to `online`/`offline` events and periodically flushes.
-  - `cashier/OrderSummary.jsx` – uses `isOffline` prop to decide between `saveOrder` (online) and `addToQueue` (offline).
-  - `cashier/CashierScreen.jsx` – passes `isOffline` and `refreshQueueLength` to `OrderSummary`.
+### 3. When NOT to choose (disqualifiers)
+- Multi‑device conflict resolution required (e.g., two cashiers offline simultaneously) → disqualify. (v1 assumes single cashier.)
+- User requires real‑time bidirectional sync (e.g., collaborative editing) → disqualify.
 
-### 4. Setup commands (if any)
-- **Install**: Already part of project – no extra package. `npm install firebase` was already done.
-- **Initialisation**: IndexedDB database is opened and stores created by `db/indexedDB.js` (version upgrade handles `writeQueue`). No extra init.
-- **Browser/API permissions**: IndexedDB automatically available; no permission required. `window.online` events work without permission.
+### 4. Dependencies (all required; OR allowed)
+- indexed_db_setup (must have `writeQueue` store)
+- (firebase_initialisation) OR (supabase_initialisation)
+- saveOrder function (writes to remote DB)
 
-### 5. Known limits and edge cases
-- **What it does NOT handle**:  
-  - Conflict resolution if the same order is queued from multiple devices (single cashier assumed).  
-  - Automatic retry with exponential backoff (only simple retry on each flush attempt).  
-  - Large queues (>10k items) may cause slow flush and UI blocking (no batching in flush).
-- **Fails gracefully**: If an individual order fails to save to Firestore, it remains in the queue and is retried on the next flush. The rest of the queue continues. The offline banner remains.
-- **Scalability ceilings**: Queue stored in IndexedDB – practical limit is hundreds of MB; performance degrades with thousands of items.
+### 5. Edge cases / known limits (including graceful failure)
+- IndexedDB quota exceeded → queue stops, user sees error banner.
+- Large queue (>10k items) → flush may block UI; no batching.
+- If remote write fails (e.g., network but DB error), order stays in queue, retries on next flush.
+- Graceful failure: User sees “Working offline” banner; orders never lost.
 
-### 6. Dependencies on other fulfillers
-- **Depends on**:  
-  - `indexed_db_setup` – must have the `writeQueue` object store created (handled in `indexedDB.js`).  
-  - `firebase_initialisation` – Firestore must be configured and working.  
-  - `saveOrder` (from `orderService.js`) – used by `flushQueue` to write to Firestore.
-- **Must be present before use**:  
-  - IndexedDB database must be opened with version that includes `writeQueue` store.  
-  - Firebase config must be valid.
+### 6. Verification steps (user test)
+1. Go offline (airplane mode or DevTools offline).
+2. Create an order → toast “Order saved locally” and queue badge appears.
+3. Go online → badge disappears within 30 seconds, order appears in remote database and local cache.
+4. Close browser while offline with queued orders → reopen, go online → queue flushes.
 
-### 7. Verification / test
-- **Human verification**:  
-  1. Go offline (airplane mode or DevTools offline).  
-  2. Create an order on cashier screen → confirm → observe “Order saved locally” toast and queue badge (e.g., “📦 1 order(s) waiting to sync”).  
-  3. Go online → within 30 seconds (or immediately if `online` event fires), badge disappears and order appears in Firebase console (`orders` collection) and on owner dashboard.  
-  4. Repeat with browser closed while offline → reopen (still offline) → order should reappear in queue. Then go online → flush.
-
-### 8. References in the source
-- **Template (v2.0) quotes**:  
-  - Section 3: “IF offline: save order to local write queue in IndexedDB.”  
-  - Section 5: “writeQueue (keyPath: orderId)”, “If offline, write to writeQueue; flush when online (cashier device).”  
-  - Section “KEY FIXES APPLIED”: “Offline queue flush reliability: ensured queueService.js uses new Promise wrappers for IndexedDB getAll(), and flushQueue performs atomic transactions.”
-- **Code references** (from chat):  
-  - `src/db/queueService.js` – `flushQueue` atomic loop.  
-  - `src/hooks/useWriteQueue.js` – `refreshQueueLength`, online/offline listeners.  
-  - `src/cashier/CashierScreen.jsx` – passing `isOffline` and `onQueueChange`.
-
----
-
-
+### 7. Implementation sketch
+Required (complex). Key patterns:
+- IndexedDB `writeQueue` store with `orderId` keyPath.
+- `addToQueue`: store order with `queuedAt` timestamp.
+- `flushQueue`: for each queued order, save to remote, then atomic transaction: put into local `orders` + delete from `writeQueue`.
+- `useWriteQueue` hook listens to `online`/`offline` events and periodic fallback.
