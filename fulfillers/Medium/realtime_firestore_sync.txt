@@ -1,77 +1,42 @@
-## 2. realtime_firestore_sync | medium | Live updates for today’s data (owner dashboard, day period)
+# FULFILLER 
 
-### 1. Identification
-- **Name**: `realtime_firestore_sync`
-- **Complexity**: `medium`
-- **Source**: `src/hooks/useOrders.js` (when `period === "day"` and `isLive === true`), `src/owner/MiddleTab.jsx` (passes `isLive=true` for day period). Template section “REAL-TIME DATA” and “Middle Tab (Daily Essentials)”.
+### 1. Name, version, complexity & purpose
+- **Name**: realtime_firestore_sync
+- **Version**: v1
+- **Complexity**: medium
+- **Purpose**: Subscribe to live updates for a time‑bounded query (e.g., today’s orders) and update UI automatically.
 
-### 2. Condition fulfilled
-- **User need**: Owner sees current day’s revenue, orders, and splits update automatically as cashiers confirm orders, without refreshing the page.
-- **Exact technical condition**: When the owner selects “Day” period in the dashboard, a Firestore `onSnapshot` listener is attached to the `orders` collection with a filter `timestamp >= todayStart` and `shopId == SHOP_ID`. The listener sends real‑time updates to the UI. All five dashboard sections are derived from the same snapshot.
+### 2. Trigger conditions (ALL must be satisfied; use OR for alternatives)
+- User needs live updates for a specific time window (e.g., current day): Yes
+- Remote database supports real‑time listeners (Firestore): Yes
 
-### 3. Implementation pattern
-- **Key technologies / APIs**: Firestore `onSnapshot`, `query`, `where`, `orderBy`, `Timestamp`. React `useEffect` for setup and cleanup.
-- **Core code sketch** (minimal):
-  ```js
-  const todayStart = new Date(); todayStart.setHours(0,0,0,0);
-  const startTimestamp = Timestamp.fromDate(todayStart);
-  const q = query(
-    collection(db, "orders"),
-    where("shopId", "==", SHOP_ID),
-    where("timestamp", ">=", startTimestamp),
-    orderBy("timestamp", "asc")
-  );
-  const unsubscribe = onSnapshot(q, (snapshot) => {
-    const orders = snapshot.docs.map(doc => ({ orderId: doc.id, ...doc.data() }));
-    const derived = deriveAllSections(orders);
-    setData(derived);
+### 3. When NOT to choose (disqualifiers)
+- Offline mode required for this view (listener requires network) → disqualify.
+- User only needs static, once‑fetched data → disqualify.
+
+### 4. Dependencies (all required; OR allowed)
+- firebase_initialisation
+- Composite index on (timestamp, shopId) in Firestore
+
+### 5. Edge cases / known limits (including graceful failure)
+- Listener consumes reads: initial snapshot + each change.
+- Network drop → listener errors; UI shows error banner; reconnects automatically.
+- Graceful failure: error displayed, but cached data (if any) remains.
+
+### 6. Verification steps (user test)
+1. Open owner dashboard, select “Day” period.
+2. In another window, add an order as cashier.
+3. Dashboard updates within seconds.
+4. Disable network → error banner appears; re‑enable → updates resume.
+
+### 7. Implementation sketch
+Optional (medium, non‑obvious part is cleanup). Pattern:
+```js
+useEffect(() => {
+  const q = query(collection(db, "orders"), where("timestamp", ">=", todayStart));
+  const unsubscribe = onSnapshot(q, (snap) => {
+    const orders = snap.docs.map(...);
+    setData(deriveAllSections(orders));
   });
   return () => unsubscribe();
-  ```
-- **File structure / hooks**:
-  - `hooks/useOrders.js` – contains the `onSnapshot` logic when `period === "day" && isLive === true`.
-  - `owner/MiddleTab.jsx` – calls `useOrders(globalPeriod, globalPeriod === "day")`.
-  - `utils/chartHelpers.js` – `deriveAllSections(orders)` computes all five dashboard sections from a single order array.
-
-### 4. Setup commands (if any)
-- **Install**: Already part of Firebase SDK (`npm install firebase`).
-- **Initialisation**: Firestore must be enabled and security rules allow reads. Composite index on `shopId` (asc) + `timestamp` (asc) is required (see template prerequisites).
-- **Browser/API permissions**: No special permissions; relies on Firestore SDK.
-
-### 5. Known limits and edge cases
-- **What it does NOT handle**:  
-  - Does not work offline (relies on Firestore connection). Offline periods show stale data; the app shows offline banner instead.  
-  - Does not paginate large day volumes (assumes <1000 orders per day).  
-  - Listener remains active while day tab is open; switching to Week/Month stops the listener.
-- **Fails gracefully**: If network drops, `onSnapshot` will fire an error and the hook will set `error` state; the UI shows an error message but does not crash.
-- **Scalability ceilings**: Firestore free tier read limit (50k/day). Day queries typically cost 1 read per order (plus initial snapshot). Fine for normal daily volume.
-
-### 6. Dependencies on other fulfillers
-- **Depends on**:  
-  - `firebase_initialisation` – Firestore must be configured.  
-  - `firebase_server_timestamp` – orders must use Server Timestamp for correct date filtering.  
-  - `deriveAllSections` helper (from `chartHelpers.js`).
-- **Must be present before use**:  
-  - Firestore database created and security rules allow reads.  
-  - Composite index on `shopId` + `timestamp` created (otherwise `onSnapshot` throws an error).
-
-### 7. Verification / test
-- **Human verification**:  
-  1. Open owner dashboard, select “Day” period.  
-  2. On cashier device, create a new order and confirm.  
-  3. Within a few seconds, the owner dashboard should update automatically (total revenue, order count, etc.).  
-  4. Open another browser tab with the same owner dashboard; it should also update live.  
-  5. Switch to “Week” period – live updates stop (no new orders appear until you refresh or switch back to Day).  
-  6. Disable network – dashboard will show an error banner; re‑enable network – listener reconnects and updates again.
-
-### 8. References in the source
-- **Template (v2.0) quotes**:  
-  - Section “REAL-TIME DATA”: “Owner dashboard data uses one-time fetches… No live listener needed on owner side in v1.” – this was changed in the refined template; we actually implemented live listener for day period.  
-  - Section “Middle Tab (Daily Essentials)”: “Day selected: Firebase onSnapshot for today's orders.”  
-- **Code references** (from chat):  
-  - `src/hooks/useOrders.js` – the `if (period === "day" && isLive)` block with `onSnapshot`.  
-  - `src/owner/MiddleTab.jsx` – passes `isLive={globalPeriod === "day"}`.
-
----
-
-
+}, []);
